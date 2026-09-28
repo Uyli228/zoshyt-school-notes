@@ -1,0 +1,190 @@
+-- Run once in Supabase SQL Editor to enable moderated student submissions.
+create table if not exists public.library_submissions (
+  id uuid primary key default gen_random_uuid(),
+  author_id uuid not null references auth.users (id) on delete cascade,
+  subject_name text not null check (char_length(btrim(subject_name)) between 1 and 60),
+  topic_name text not null check (char_length(btrim(topic_name)) between 1 and 90),
+  title text not null check (char_length(btrim(title)) between 1 and 110),
+  summary text not null default '' check (char_length(summary) <= 180),
+  content text not null check (char_length(btrim(content)) between 20 and 10000),
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  created_at timestamptz not null default now(),
+  reviewer_id uuid references auth.users (id) on delete set null,
+  reviewed_at timestamptz
+);
+
+alter table public.library_submissions enable row level security;
+revoke all on table public.library_submissions from anon, authenticated;
+grant select, insert on table public.library_submissions to authenticated;
+
+drop policy if exists "Authors and admins can read submissions" on public.library_submissions;
+create policy "Authors and admins can read submissions"
+  on public.library_submissions for select to authenticated
+  using (author_id = (select auth.uid()) or (select public.is_library_admin()));
+
+drop policy if exists "Signed-in users can submit for review" on public.library_submissions;
+create policy "Signed-in users can submit for review"
+  on public.library_submissions for insert to authenticated
+  with check (
+    author_id = (select auth.uid())
+    and status = 'pending'
+    and reviewer_id is null
+    and reviewed_at is null
+  );
+
+create or replace function public.enforce_library_submission_rate()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recent_count integer;
+begin
+  new.author_id := (select auth.uid());
+  new.status := 'pending';
+  new.reviewer_id := null;
+  new.reviewed_at := null;
+  new.created_at := now();
+
+  perform pg_advisory_xact_lock(hashtextextended(new.author_id::text, 0));
+  select count(*) into recent_count
+  from public.library_submissions
+  where author_id = new.author_id
+    and created_at > now() - interval '1 hour';
+
+  if recent_count >= 10 then
+    raise exception 'Too many submissions. Try again later.' using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_library_submission_rate on public.library_submissions;
+create trigger enforce_library_submission_rate
+  before insert on public.library_submissions
+  for each row execute function public.enforce_library_submission_rate();
+
+create or replace function public.review_library_submission(p_submission_id uuid, p_approve boolean)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  submission public.library_submissions%rowtype;
+  library_data jsonb;
+  library_revision bigint;
+  subject_data jsonb;
+  topics_data jsonb;
+  topic_data jsonb;
+  paragraph_data jsonb;
+  subject_index integer;
+  topic_index integer;
+  subject_id text;
+  topic_id text;
+  reviewed_status text;
+  reviewed_time timestamptz := now();
+begin
+  if not (select public.is_library_admin()) then
+    raise exception 'Only library admins can review submissions.' using errcode = '42501';
+  end if;
+
+  select * into submission
+  from public.library_submissions
+  where id = p_submission_id
+  for update;
+  if not found then
+    raise exception 'Submission not found.' using errcode = 'P0002';
+  end if;
+  if submission.status <> 'pending' then
+    raise exception 'This submission has already been reviewed.' using errcode = 'P0001';
+  end if;
+
+  reviewed_status := case when p_approve then 'approved' else 'rejected' end;
+
+  if p_approve then
+    select data, revision into library_data, library_revision
+    from public.library_documents where id = 1 for update;
+    if not found then
+      raise exception 'Shared library row is missing.' using errcode = 'P0002';
+    end if;
+
+    select (ordinality - 1)::integer, value->>'id'
+      into subject_index, subject_id
+    from jsonb_array_elements(library_data) with ordinality as subjects(value, ordinality)
+    where lower(btrim(value->>'name')) = lower(btrim(submission.subject_name))
+    limit 1;
+
+    if subject_index is null then
+      subject_index := jsonb_array_length(library_data);
+      subject_id := gen_random_uuid()::text;
+      subject_data := jsonb_build_object(
+        'id', subject_id, 'name', btrim(submission.subject_name), 'icon', '📚',
+        'color', '#7969dd', 'tint', '#f0edff', 'topics', '[]'::jsonb
+      );
+      library_data := library_data || jsonb_build_array(subject_data);
+    else
+      subject_data := library_data->subject_index;
+    end if;
+
+    topics_data := coalesce(subject_data->'topics', '[]'::jsonb);
+    select (ordinality - 1)::integer, value->>'id'
+      into topic_index, topic_id
+    from jsonb_array_elements(topics_data) with ordinality as topics(value, ordinality)
+    where lower(btrim(value->>'name')) = lower(btrim(submission.topic_name))
+    limit 1;
+
+    paragraph_data := jsonb_build_object(
+      'id', gen_random_uuid()::text,
+      'name', btrim(submission.title),
+      'summary', btrim(submission.summary),
+      'content', btrim(submission.content),
+      'image', ''
+    );
+
+    if topic_index is null then
+      topic_index := jsonb_array_length(topics_data);
+      topic_id := gen_random_uuid()::text;
+      topic_data := jsonb_build_object(
+        'id', topic_id, 'name', btrim(submission.topic_name),
+        'description', '', 'paragraphs', jsonb_build_array(paragraph_data)
+      );
+      topics_data := topics_data || jsonb_build_array(topic_data);
+    else
+      topic_data := topics_data->topic_index;
+      topic_data := jsonb_set(
+        topic_data,
+        '{paragraphs}',
+        coalesce(topic_data->'paragraphs', '[]'::jsonb) || jsonb_build_array(paragraph_data),
+        true
+      );
+      topics_data := jsonb_set(topics_data, array[topic_index::text], topic_data, true);
+    end if;
+
+    subject_data := jsonb_set(subject_data, '{topics}', topics_data, true);
+    library_data := jsonb_set(library_data, array[subject_index::text], subject_data, true);
+
+    update public.library_documents
+    set data = library_data, revision = library_revision + 1, updated_at = reviewed_time
+    where id = 1;
+  end if;
+
+  update public.library_submissions
+  set status = reviewed_status, reviewer_id = (select auth.uid()), reviewed_at = reviewed_time
+  where id = p_submission_id;
+
+  return jsonb_build_object('id', p_submission_id, 'status', reviewed_status);
+end;
+$$;
+
+revoke all on function public.enforce_library_submission_rate() from public, anon, authenticated;
+revoke all on function public.review_library_submission(uuid, boolean) from public, anon;
+grant execute on function public.review_library_submission(uuid, boolean) to authenticated;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.library_submissions;
+exception when duplicate_object then null;
+end;
+$$;

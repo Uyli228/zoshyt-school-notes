@@ -34,6 +34,9 @@ let isAdmin = false;
 let sharedRevision = 0;
 let realtimeChannel = null;
 let currentUser = null;
+let pendingSubmissionCount = 0;
+let activeScreen = 'library';
+let submissionQueryGeneration = 0;
 let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
@@ -70,8 +73,12 @@ function esc(value = '') { return String(value).replace(/[&<>"']/g, (char) => ({
 function notify(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2600); }
 function renderAccessState() {
   const account = $('#accountButton');
-  account.textContent = isAdmin ? 'Адміністратор · вийти' : currentUser ? 'Вийти' : 'Вхід адміністратора';
-  account.title = isAdmin ? 'Вийти з режиму адміністратора' : currentUser ? 'Вийти з облікового запису' : 'Увійти, щоб керувати спільною бібліотекою';
+  account.textContent = currentUser ? (isAdmin ? 'Адміністратор · вийти' : 'Вийти') : 'Увійти';
+  account.title = currentUser ? 'Вийти з облікового запису' : 'Увійти, щоб запропонувати конспект';
+  const submitButton = $('#submitNotesButton');
+  submitButton.textContent = isAdmin ? `Пропозиції${pendingSubmissionCount ? ` · ${pendingSubmissionCount}` : ''}` : 'Запропонувати конспект';
+  submitButton.title = isAdmin ? 'Переглянути конспекти на перевірці' : 'Надіслати конспект на перевірку';
+  submitButton.disabled = !cloudReady;
   $('#importButton').hidden = !canManage();
   const note = $('#storageNote');
   note.innerHTML = cloudConfigured
@@ -119,10 +126,18 @@ async function updateAdminRole(user, announce = false) {
     const { data: role, error } = await cloudClient.from('library_admins').select('user_id').eq('user_id', user.id).maybeSingle();
     if (error) { console.error(error); cloudError = 'Не вдалося перевірити права адміністратора.'; }
     isAdmin = Boolean(role);
-    if (announce && !isAdmin) notify('Цей акаунт має лише доступ для перегляду. Додай його до списку адміністраторів у Supabase.');
+    if (announce && !isAdmin) notify('Вхід виконано. Тепер можна надсилати конспекти на перевірку.');
   }
+  await loadPendingSubmissionCount();
   renderAccessState();
   render();
+}
+async function loadPendingSubmissionCount() {
+  pendingSubmissionCount = 0;
+  if (!isAdmin || !cloudClient) return;
+  const { count, error } = await cloudClient.from('library_submissions').select('id', { count: 'exact', head: true }).eq('status', 'pending');
+  if (error) { console.error(error); return; }
+  pendingSubmissionCount = count || 0;
 }
 async function migrateLocalLibrary() {
   if (!isAdmin || !cloudReady) return;
@@ -154,6 +169,15 @@ async function initializeApp() {
           renderAccessState();
         }
       }).subscribe();
+    cloudClient.channel('library-submission-updates').on('postgres_changes',
+      { event: '*', schema: 'public', table: 'library_submissions' },
+      async () => {
+        if (isAdmin) {
+          await loadPendingSubmissionCount();
+          renderAccessState();
+          if (activeScreen === 'submissions') renderSubmissionQueue();
+        }
+      }).subscribe();
   } catch (error) {
     console.error(error);
     cloudReady = false;
@@ -171,14 +195,14 @@ async function requestAdminLink(event) {
   if (error) { notify('Не вдалося надіслати посилання. Перевір адресу пошти.'); console.error(error); return; }
   $('#authDialog').close();
   event.currentTarget.reset();
-  notify('Посилання для входу надіслано на пошту.');
+  notify('Посилання для входу надіслано на пошту. Після входу можна буде надіслати конспект.');
 }
 async function handleAccountButton() {
   if (currentUser) {
     await cloudClient.auth.signOut();
     await updateAdminRole(null, false);
   } else if (cloudConfigured) $('#authDialog').showModal();
-  else notify('Вхід адміністратора стане доступним після підключення Supabase.');
+  else notify('Вхід стане доступним після підключення спільної бібліотеки.');
 }
 function counts(sub) { return { topics: sub.topics.length, paragraphs: sub.topics.reduce((sum, item) => sum + item.paragraphs.length, 0) }; }
 function renderNav() {
@@ -192,13 +216,13 @@ function renderNav() {
 function setBreadcrumbs(items) {
   $('#breadcrumbs').innerHTML = items.map((item, index) => `${index ? '<span class="crumb-sep">/</span>' : ''}${item.action ? `<button data-crumb="${item.action}">${esc(item.label)}</button>` : `<strong>${esc(item.label)}</strong>`}`).join('');
   $('#breadcrumbs').querySelectorAll('[data-crumb]').forEach((el) => el.addEventListener('click', () => {
-    if (el.dataset.crumb === 'home') current = { subjectId: null, topicId: null, paragraphId: null };
+    if (el.dataset.crumb === 'home') { activeScreen = 'library'; current = { subjectId: null, topicId: null, paragraphId: null }; }
     if (el.dataset.crumb === 'subject') current.topicId = current.paragraphId = null;
     if (el.dataset.crumb === 'topic') current.paragraphId = null;
     render();
   }));
 }
-function render() { renderNav(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
+function render() { renderNav(); if (activeScreen === 'submissions') return renderSubmissionQueue(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
 function renderHome() {
   setBreadcrumbs([{ label: 'Спільна бібліотека' }]);
   const totalTopics = data.reduce((sum, sub) => sum + sub.topics.length, 0);
@@ -213,6 +237,83 @@ function renderHome() {
   view.querySelectorAll('[data-edit-subject]').forEach((el) => el.addEventListener('click', (event) => { event.stopPropagation(); openEditor('subject', el.dataset.editSubject); }));
 }
 function plural(n, one, few, many) { const n10=n%10,n100=n%100; return n10===1&&n100!==11?one:n10>=2&&n10<=4&&(n100<12||n100>14)?few:many; }
+async function openSubmissionFlow() {
+  if (!cloudReady) { notify('Спільна бібліотека зараз недоступна. Спробуй пізніше.'); return; }
+  if (isAdmin) {
+    activeScreen = 'submissions';
+    current = { subjectId: null, topicId: null, paragraphId: null };
+    await renderSubmissionQueue();
+    return;
+  }
+  if (!currentUser) { $('#authDialog').showModal(); return; }
+  const options = $('#subjectOptions');
+  options.innerHTML = data.map((item) => `<option value="${esc(item.name)}"></option>`).join('');
+  $('#submissionSubject').value = subject(current.subjectId)?.name || '';
+  $('#submissionTopic').value = topic(subject(current.subjectId), current.topicId)?.name || '';
+  $('#submissionForm').reset();
+  $('#submissionSubject').value = subject(current.subjectId)?.name || '';
+  $('#submissionTopic').value = topic(subject(current.subjectId), current.topicId)?.name || '';
+  $('#submissionDialog').showModal();
+  $('#submissionSubject').focus();
+}
+async function renderSubmissionQueue() {
+  if (!isAdmin || !cloudClient) { activeScreen = 'library'; render(); return; }
+  const generation = ++submissionQueryGeneration;
+  setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: 'Пропозиції' }]);
+  view.innerHTML = '<div class="page-heading"><div><span class="eyebrow">МОДЕРАЦІЯ</span><h1>Пропозиції конспектів</h1><p>Перевір матеріал перед публікацією у спільній бібліотеці.</p></div></div><div class="empty-state"><p>Завантажую пропозиції…</p></div>';
+  const { data: submissions, error } = await cloudClient.from('library_submissions')
+    .select('id,subject_name,topic_name,title,summary,content,created_at')
+    .eq('status', 'pending').order('created_at', { ascending: true });
+  if (generation !== submissionQueryGeneration || activeScreen !== 'submissions') return;
+  if (error) {
+    console.error(error);
+    view.innerHTML = '<div class="empty-state"><h3>Не вдалося завантажити пропозиції</h3><p>Перевір підключення до Supabase та спробуй ще раз.</p><button class="button button-primary" id="retrySubmissions">Оновити</button></div>';
+    $('#retrySubmissions').onclick = renderSubmissionQueue;
+    return;
+  }
+  pendingSubmissionCount = submissions.length;
+  renderAccessState();
+  view.innerHTML = `<div class="page-heading"><div><span class="eyebrow">МОДЕРАЦІЯ</span><h1>Пропозиції конспектів</h1><p>${submissions.length ? 'Перевір матеріал перед публікацією у спільній бібліотеці.' : 'Нових пропозицій поки немає.'}</p></div></div>${submissions.length ? `<div class="submission-list">${submissions.map((item) => `<article class="submission-card"><div class="submission-meta"><span>${esc(item.subject_name)} <b>›</b> ${esc(item.topic_name)}</span><time>${new Date(item.created_at).toLocaleDateString('uk-UA')}</time></div><h2>${esc(item.title)}</h2>${item.summary ? `<p class="article-summary">${esc(item.summary)}</p>` : ''}<details><summary>Переглянути конспект</summary><div class="submission-content">${esc(item.content)}</div></details><div class="submission-actions"><button class="button button-quiet" data-reject-submission="${esc(item.id)}">Відхилити</button><button class="button button-primary" data-approve-submission="${esc(item.id)}">Опублікувати</button></div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">✅</div><h3>Усе перевірено</h3><p>Коли учні надішлють нові конспекти, вони з’являться тут.</p></div>'}`;
+  view.querySelectorAll('[data-approve-submission]').forEach((button) => button.addEventListener('click', () => reviewSubmission(button.dataset.approveSubmission, true)));
+  view.querySelectorAll('[data-reject-submission]').forEach((button) => button.addEventListener('click', () => reviewSubmission(button.dataset.rejectSubmission, false)));
+}
+async function reviewSubmission(id, approve) {
+  if (!isAdmin) return;
+  const { error } = await cloudClient.rpc('review_library_submission', { p_submission_id: id, p_approve: approve });
+  if (error) {
+    console.error(error);
+    notify('Не вдалося оновити пропозицію. Перевір права бази даних.');
+    return;
+  }
+  if (approve) await loadSharedLibrary();
+  await loadPendingSubmissionCount();
+  renderAccessState();
+  notify(approve ? 'Конспект опубліковано для всієї школи.' : 'Пропозицію відхилено.');
+  await renderSubmissionQueue();
+}
+async function submitSuggestion(event) {
+  event.preventDefault();
+  if (!currentUser || !cloudReady) { notify('Увійди, щоб надіслати конспект.'); return; }
+  const form = new FormData(event.currentTarget);
+  const suggestion = {
+    author_id: currentUser.id,
+    subject_name: String(form.get('subject_name') || '').trim(),
+    topic_name: String(form.get('topic_name') || '').trim(),
+    title: String(form.get('title') || '').trim(),
+    summary: String(form.get('summary') || '').trim(),
+    content: String(form.get('content') || '').trim()
+  };
+  if (suggestion.content.length < 20) { notify('Додай трохи більше змісту — від 20 символів.'); return; }
+  const { error } = await cloudClient.from('library_submissions').insert(suggestion);
+  if (error) {
+    console.error(error);
+    notify(error.code === 'P0001' ? 'Забагато пропозицій за короткий час. Спробуй пізніше.' : 'Не вдалося надіслати конспект. Перевір поля й спробуй ще раз.');
+    return;
+  }
+  $('#submissionDialog').close();
+  event.currentTarget.reset();
+  notify('Конспект надіслано модератору на перевірку.');
+}
 function renderSubject(sub) {
   setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name }]); const c = counts(sub);
   view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div>':''}</div>
@@ -279,7 +380,8 @@ function labelsWord(kind){return {subject:'Предмет',topic:'Тему',para
 async function removeItem(kind,id){if(!canManage())return;const words={subject:'предмет разом з усіма його темами й параграфами',topic:'тему разом з усіма її параграфами',paragraph:'параграф'};if(!confirm(`Видалити ${words[kind]}? Цю дію не можна скасувати.`))return;const previousData=structuredClone(data);if(kind==='subject'){data=data.filter(x=>x.id!==id);current={subjectId:null,topicId:null,paragraphId:null};}if(kind==='topic'){const sub=subject(current.subjectId);sub.topics=sub.topics.filter(x=>x.id!==id);current.topicId=null;}if(kind==='paragraph'){const top=topic(subject(current.subjectId),current.topicId);top.paragraphs=top.paragraphs.filter(x=>x.id!==id);current.paragraphId=null;}if(!await saveData())data=previousData;else notify('Матеріал видалено');render();}
 function backup(){const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),subjects:data},null,2)],{type:'application/json'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='tetrad-backup.json';link.click();URL.revokeObjectURL(link.href);}
 async function importBackup(file){if(!canManage())return;const previousData=structuredClone(data);try{const parsed=JSON.parse(await file.text());const candidate=Array.isArray(parsed)?parsed:parsed.subjects;if(!Array.isArray(candidate)||candidate.some(s=>typeof s.name!=='string'||!Array.isArray(s.topics)))throw new Error();if(!confirm(`Замінити поточну бібліотеку? Буде імпортовано предметів: ${candidate.length}.`))return;data=candidate;current={subjectId:null,topicId:null,paragraphId:null};if(!await saveData())data=previousData;else notify('Спільну бібліотеку оновлено');render();}catch{data=previousData;notify('Цей файл не схожий на копію бібліотеки.');}}
-$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
-$('#accountButton').addEventListener('click',handleAccountButton);$('#authForm').addEventListener('submit',requestAdminLink);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
-$('#searchInput').addEventListener('input',e=>renderSearch(e.target.value));document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
+$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
+$('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
+$('#submissionForm').addEventListener('submit',submitSuggestion);$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
+$('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
