@@ -336,7 +336,32 @@ async function checkForCommentNotifications() {
       paragraphId: String(post.published_paragraph_id), title: post.title, subjectName: post.subject_name,
       topicName: post.topic_name, publishedAt: post.reviewed_at || ''
     }));
-  } else if (!/published_paragraph_id|schema cache/i.test(submissionsError.message || '')) console.error(submissionsError);
+  } else if (/published_paragraph_id|schema cache/i.test(submissionsError.message || '')) {
+    // Older installations do not have the published ID column yet. Match legacy approved posts to the shared library.
+    const { data: legacySubmissions, error: legacyError } = await cloudClient.from('library_submissions')
+      .select('title,subject_name,topic_name,content,reviewed_at').eq('author_id', userId).eq('status', 'approved');
+    if (legacyError) console.error('Не вдалося знайти опубліковані конспекти автора:', legacyError);
+    else legacySubmissions.forEach((post) => {
+      const matches = [];
+      data.forEach((sub) => {
+        if (sub.name.trim().toLocaleLowerCase('uk') !== post.subject_name.trim().toLocaleLowerCase('uk')) return;
+        sub.topics.forEach((top) => {
+          if (top.name.trim().toLocaleLowerCase('uk') !== post.topic_name.trim().toLocaleLowerCase('uk')) return;
+          top.paragraphs.forEach((item) => {
+            if (item.name.trim().toLocaleLowerCase('uk') === post.title.trim().toLocaleLowerCase('uk')
+              && item.content.trim() === post.content.trim()) matches.push({ sub, top, item });
+          });
+        });
+      });
+      if (matches.length === 1) {
+        const { sub, top, item } = matches[0];
+        ownedParagraphs.set(String(item.id), {
+          paragraphId: String(item.id), title: item.name, subjectName: sub.name,
+          topicName: top.name, publishedAt: post.reviewed_at || item.createdAt || item.updatedAt || ''
+        });
+      }
+    });
+  } else console.error('Не вдалося перевірити схвалені конспекти автора:', submissionsError);
   const paragraphIds = [...ownedParagraphs.keys()];
   if (!paragraphIds.length) return;
   const { data: comments, error } = await cloudClient.from('library_comments')
@@ -352,7 +377,8 @@ async function checkForCommentNotifications() {
     return post && comment.author_id !== userId && !seen.has(comment.id)
       && (!post.publishedAt || new Date(comment.created_at) > new Date(post.publishedAt));
   }).map((comment) => ({ ...comment, post: ownedParagraphs.get(String(comment.paragraph_id)) }));
-  if (!commentNotificationItems.length || $('#commentNotificationDialog').open) return;
+  const dialog = $('#commentNotificationDialog');
+  if (!commentNotificationItems.length || !dialog || dialog.open) return;
   const first = commentNotificationItems[0];
   $('#commentNotificationHeadline').textContent = 'Тобі написали коментар!';
   $('#commentNotificationSummary').textContent = commentNotificationItems.length === 1
@@ -360,7 +386,7 @@ async function checkForCommentNotifications() {
     : `У тебе ${commentNotificationItems.length} нових ${plural(commentNotificationItems.length, 'коментар', 'коментарі', 'коментарів')} під конспектами. Спершу переглянь цей:`;
   $('#commentNotificationPost').textContent = `${first.post.subjectName} · ${first.post.topicName} · ${first.post.title}`;
   $('#commentNotificationPreview').textContent = `«${first.body.slice(0, 220)}${first.body.length > 220 ? '…' : ''}» — ${first.author_name}`;
-  $('#commentNotificationDialog').showModal();
+  dialog.showModal();
 }
 function openNotifiedComment() {
   const notification = commentNotificationItems[0];
@@ -370,7 +396,7 @@ function openNotifiedComment() {
   let seen = [];
   try { const saved = JSON.parse(localStorage.getItem(seenKey) || '[]'); if (Array.isArray(saved)) seen = saved; } catch { /* Continue without saved notification state. */ }
   try { localStorage.setItem(seenKey, JSON.stringify([...new Set([...seen, notification.id])].slice(-500))); } catch { /* The comment remains readable even if storage is unavailable. */ }
-  $('#commentNotificationDialog').close();
+  $('#commentNotificationDialog')?.close();
   const found = findParagraph(notification.paragraphId);
   if (!found) { notify('Цей конспект більше недоступний у бібліотеці.'); return; }
   pendingCommentScrollId = notification.paragraphId;
@@ -1000,7 +1026,7 @@ $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNote
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
 $('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
-$('#commentNotificationGo').addEventListener('click',openNotifiedComment);$('#commentNotificationLater').addEventListener('click',()=>$('#commentNotificationDialog').close());$('#commentNotificationDialog').addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
+$('#commentNotificationGo')?.addEventListener('click',openNotifiedComment);$('#commentNotificationLater')?.addEventListener('click',()=>$('#commentNotificationDialog')?.close());$('#commentNotificationDialog')?.addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
