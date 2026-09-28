@@ -102,6 +102,50 @@ function openParagraph(sub, top, p) {
   saveReaderPrefs();
   render();
 }
+let elephantModeActive = false;
+function turnTextIntoElephants(root = document.body) {
+  const replaceText = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (!node.nodeValue.trim() || node.parentElement?.closest('script,style,noscript,textarea,input') || node.parentElement?.classList.contains('elephant-text')) return;
+      const elephant = document.createElement('span');
+      elephant.className = 'elephant-text';
+      elephant.textContent = '🐘';
+      node.replaceWith(elephant);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    for (const attribute of ['placeholder', 'title', 'aria-label', 'alt']) {
+      if (node.hasAttribute(attribute) && node.getAttribute(attribute).trim()) node.setAttribute(attribute, '🐘');
+    }
+    if (node.matches('input,textarea') && node.type !== 'password') node.value = '🐘';
+    if (node.matches('script,style,noscript,textarea,input')) return;
+    [...node.childNodes].forEach(replaceText);
+  };
+  replaceText(root);
+}
+function activateElephantMode() {
+  if (elephantModeActive) return;
+  elephantModeActive = true;
+  document.body.classList.add('elephant-mode');
+  const brandMark = $('#homeLink .brand-mark');
+  if (brandMark) brandMark.innerHTML = '<span class="elephant-logo">🐘</span>';
+  document.title = '🐘 🐘 🐘';
+  turnTextIntoElephants();
+  const observer = new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(turnTextIntoElephants)));
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+const logoClicks = [];
+$('#homeLink').addEventListener('click', (event) => {
+  if (elephantModeActive) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+  const now = Date.now();
+  logoClicks.push(now);
+  while (logoClicks.length && now - logoClicks[0] > 1400) logoClicks.shift();
+  if (logoClicks.length >= 5) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    activateElephantMode();
+  }
+}, true);
 function notePromptMarkup(prefix) {
   return `<section class="note-prompt-box"><h3>Спочатку створи конспект за шаблоном</h3><p class="auth-copy">Натисни кнопку й надішли промпт ШІ разом із джерелом: встав текст або прикріпи фото зошита, сторінки підручника чи слайдів прямо в чаті з ШІ. ШІ виправить очевидні помилки й оформить матеріал у готовий конспект. Поле зображення нижче додає фото до публікації на сайті, але не передає його ШІ.</p><button type="button" class="button button-primary note-prompt-button" id="${prefix}CopyNotePrompt">ПРОМПТ ДЛЯ ШІ</button><textarea id="${prefix}NotePrompt" aria-label="Промпт для ШІ" readonly hidden></textarea><small id="${prefix}NotePromptStatus" class="note-prompt-status" aria-live="polite"></small></section>`;
 }
