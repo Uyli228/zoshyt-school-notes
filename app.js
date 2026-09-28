@@ -55,6 +55,7 @@ let activeFlashcardDeck = [];
 let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
+let notePromptUsed = { item: false, submission: false };
 let toastTimer;
 const $ = (selector) => document.querySelector(selector);
 const view = $('#view');
@@ -98,7 +99,7 @@ function openParagraph(sub, top, p) {
   render();
 }
 function notePromptMarkup(prefix) {
-  return `<details class="note-prompt-box" open><summary>Промпт для якісного конспекту</summary><p class="auth-copy">1. Встав сюди джерело або чернетку конспекту. 2. Скопіюй промпт і надішли його ШІ. 3. Перевір відповідь і встав готовий конспект замість джерела. Промпт враховує лише текст у полі; якщо матеріал на фото, спочатку попроси ШІ розпізнати його.</p><div class="field"><label for="${prefix}NotePrompt">Готовий промпт</label><textarea id="${prefix}NotePrompt" readonly></textarea><button type="button" class="button button-quiet" id="${prefix}CopyNotePrompt">Скопіювати промпт</button></div></details>`;
+  return `<section class="note-prompt-box"><h3>Спочатку створи конспект за шаблоном</h3><p class="auth-copy">1. Встав джерело в поле нижче. 2. Натисни кнопку, скопіюй промпт у ШІ. 3. Перевір відповідь і заміни нею джерело. Для фото спочатку попроси ШІ розпізнати текст.</p><button type="button" class="button button-primary note-prompt-button" id="${prefix}CopyNotePrompt">ПРОМПТ ДЛЯ ШІ</button><textarea id="${prefix}NotePrompt" aria-label="Промпт для ШІ" readonly hidden></textarea><small id="${prefix}NotePromptStatus" class="note-prompt-status" aria-live="polite"></small></section>`;
 }
 function buildNotePrompt(prefix) {
   const isSubmission = prefix === 'submission';
@@ -154,6 +155,9 @@ ${content || '[Спочатку встав матеріал або чернет�
 }
 function bindNotePrompt(prefix) {
   const isSubmission = prefix === 'submission';
+  notePromptUsed[prefix] = false;
+  const submitButton = isSubmission ? $('#submissionForm button[type="submit"]') : $('#editorForm button[type="submit"]');
+  submitButton.disabled = isSubmission || !editContext?.id;
   const sourceFields = isSubmission ? ['Subject', 'Topic', 'Title', 'Summary', 'Content'] : ['Name', 'Summary', 'Content'];
   const refresh = () => { $(`#${prefix}NotePrompt`).value = buildNotePrompt(prefix); };
   sourceFields.forEach((name) => $(`#${prefix}${name}`)?.addEventListener('input', refresh));
@@ -167,9 +171,15 @@ function bindNotePrompt(prefix) {
     const field = $(`#${prefix}NotePrompt`);
     const prompt = buildNotePrompt(prefix);
     field.value = prompt;
-    try { await navigator.clipboard.writeText(prompt); }
-    catch { field.focus(); field.select(); document.execCommand('copy'); }
-    notify('Промпт скопійовано. Встав його в ШІ, а готову відповідь поверни в поле конспекту.');
+    field.hidden = false;
+    let copied = false;
+    try { await navigator.clipboard.writeText(prompt); copied = true; }
+    catch { field.focus(); field.select(); try { copied = document.execCommand('copy'); } catch { copied = false; } }
+    notePromptUsed[prefix] = true;
+    submitButton.disabled = false;
+    $(`#${prefix}CopyNotePrompt`).textContent = copied ? '✓ ПРОМПТ СКОПІЙОВАНО — НАДІШЛИ ЙОГО ШІ' : 'ПРОМПТ ДЛЯ ШІ';
+    $(`#${prefix}NotePromptStatus`).textContent = copied ? 'Встав промпт у ШІ, а його готову відповідь поверни в поле конспекту.' : 'Промпт показано нижче. Скопіюй його вручну й встав у ШІ.';
+    if (!copied) { field.focus(); field.select(); }
   });
 }
 function clearSharedParagraphUrl() {
@@ -637,6 +647,7 @@ async function reviewSubmission(id, approve) {
 }
 async function submitSuggestion(event) {
   event.preventDefault();
+  if (!notePromptUsed.submission) { notify('Спочатку натисни велику кнопку «ПРОМПТ ДЛЯ ШІ», скопіюй шаблон і створи за ним конспект.'); $('#submissionNotePrompt')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   if (!currentUser || !cloudReady) { notify('Увійди, щоб надіслати конспект.'); return; }
   const form = new FormData(event.currentTarget);
   let studyTools;
@@ -879,6 +890,7 @@ function renderSearch(query) {
 }
 function openEditor(kind,id=null) {
   if (!canManage()) { notify('Редагувати спільні матеріали може лише адміністратор.'); return; }
+  $('#editorForm button[type="submit"]').disabled = false;
   editContext={kind,id};const dialog=$('#editorDialog'),fields=$('#formFields');const isEdit=Boolean(id);$('#dialogEyebrow').textContent=isEdit?'РЕДАГУВАННЯ':'НОВИЙ ЗАПИС';
   const item=kind==='subject'?subject(id):kind==='topic'?topic(subject(current.subjectId),id):paragraph(topic(subject(current.subjectId),current.topicId),id);
   const labels={subject:['предмет','Предмет'],topic:['тему','Тему'],paragraph:['параграф','Параграф']};$('#dialogTitle').textContent=`${isEdit?'Змінити':'Додати'} ${labels[kind][0]}`;
@@ -896,6 +908,7 @@ function compressImage(file) { return new Promise((resolve,reject)=>{if(!file.ty
 function closeEditor(){ $('#editorDialog').close();editContext=null; }
 async function saveEditor(event) {
   event.preventDefault();if(!editContext)return;const {kind,id}=editContext;const form=new FormData(event.currentTarget);const name=String(form.get('name')||'').trim();
+  if(kind==='paragraph'&&!id&&!notePromptUsed.item) { notify('Спочатку натисни велику кнопку «ПРОМПТ ДЛЯ ШІ» й створи конспект за шаблоном.'); $('#itemCopyNotePrompt')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   let studyTools = { quiz: null, flashcards: null };
   if(kind==='paragraph') { try { studyTools = collectAdditionalStudyTools('item'); } catch(error) { notify(error.message); return; } }
   const previousData=structuredClone(data);

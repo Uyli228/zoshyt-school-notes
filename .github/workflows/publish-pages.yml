@@ -23,6 +23,10 @@ jobs:
     steps:
       - name: Отримати файли сайту
         uses: actions/checkout@v6
+      - name: Оновити версії ресурсів, щоб браузер завантажив останню збірку
+        run: |
+          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${GITHUB_SHA}\"|" index.html
+          sed -i "s|src=\"app.js\"|src=\"app.js?v=${GITHUB_SHA}\"|" index.html
       - name: Налаштувати GitHub Pages
         uses: actions/configure-pages@v5
       - name: Підготувати файли сайту
