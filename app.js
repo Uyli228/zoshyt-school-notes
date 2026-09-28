@@ -91,10 +91,58 @@ function findParagraph(paragraphId) {
   return null;
 }
 function openParagraph(sub, top, p) {
+  clearSharedParagraphUrl();
   current = { subjectId: sub.id, topicId: top.id, paragraphId: p.id };
   readerPrefs.recent = [p.id, ...readerPrefs.recent.filter((id) => id !== p.id)].slice(0, 12);
   saveReaderPrefs();
   render();
+}
+function clearSharedParagraphUrl() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('subject') && !url.searchParams.has('topic') && !url.searchParams.has('paragraph')) return;
+  url.searchParams.delete('subject');
+  url.searchParams.delete('topic');
+  url.searchParams.delete('paragraph');
+  history.replaceState(null, '', url);
+}
+function openSharedParagraphFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const subjectId = params.get('subject');
+  const topicId = params.get('topic');
+  const paragraphId = params.get('paragraph');
+  if (!subjectId || !topicId || !paragraphId) return false;
+  const sub = subject(subjectId);
+  const top = topic(sub, topicId);
+  const item = paragraph(top, paragraphId);
+  if (!sub || !top || !item) return false;
+  current = { subjectId, topicId, paragraphId };
+  return true;
+}
+async function shareParagraph(sub, top, item) {
+  const url = new URL(`${location.origin}${location.pathname}`);
+  url.searchParams.set('subject', sub.id);
+  url.searchParams.set('topic', top.id);
+  url.searchParams.set('paragraph', item.id);
+  const shareData = { title: item.name, text: `${sub.name} · ${top.name}`, url: url.href };
+  if (navigator.share) {
+    try { await navigator.share(shareData); return; }
+    catch (error) { if (error.name === 'AbortError') return; }
+  }
+  try {
+    await navigator.clipboard.writeText(url.href);
+    notify('Посилання скопійовано — надішли його другу.');
+  } catch {
+    const field = document.createElement('textarea');
+    field.value = url.href;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    if (copied) notify('Посилання скопійовано — надішли його другу.');
+    else window.prompt('Скопіюй посилання на параграф:', url.href);
+  }
 }
 async function saveData() {
   if (!cloudConfigured) {
@@ -201,10 +249,11 @@ async function migrateLocalLibrary() {
   render();
 }
 async function initializeApp() {
-  if (!cloudConfigured) { cloudReady = false; renderAccessState(); render(); return; }
+  if (!cloudConfigured) { cloudReady = false; openSharedParagraphFromUrl(); renderAccessState(); render(); return; }
   cloudClient = window.supabase.createClient(cloudConfig.url, cloudConfig.anonKey);
   try {
     await loadSharedLibrary();
+    openSharedParagraphFromUrl();
     const { data: { session } } = await cloudClient.auth.getSession();
     await updateAdminRole(session?.user, false);
     cloudClient.auth.onAuthStateChange((_event, session) => {
@@ -407,11 +456,12 @@ function renderNav() {
     const count = counts(sub).paragraphs;
     return `<button class="subject-link ${current.subjectId === sub.id ? 'active' : ''}" data-subject="${esc(sub.id)}"><span class="subject-icon">${esc(sub.icon || '📚')}</span><span>${esc(sub.name)}</span><span class="subject-count">${count}</span></button>`;
   }).join('');
-  $('#subjectNav').querySelectorAll('[data-subject]').forEach((el) => el.addEventListener('click', () => { current = { subjectId: el.dataset.subject, topicId: null, paragraphId: null }; render(); }));
+  $('#subjectNav').querySelectorAll('[data-subject]').forEach((el) => el.addEventListener('click', () => { clearSharedParagraphUrl(); current = { subjectId: el.dataset.subject, topicId: null, paragraphId: null }; render(); }));
 }
 function setBreadcrumbs(items) {
   $('#breadcrumbs').innerHTML = items.map((item, index) => `${index ? '<span class="crumb-sep">/</span>' : ''}${item.action ? `<button data-crumb="${item.action}">${esc(item.label)}</button>` : `<strong>${esc(item.label)}</strong>`}`).join('');
   $('#breadcrumbs').querySelectorAll('[data-crumb]').forEach((el) => el.addEventListener('click', () => {
+    clearSharedParagraphUrl();
     if (el.dataset.crumb === 'home') { activeScreen = 'library'; current = { subjectId: null, topicId: null, paragraphId: null }; }
     if (el.dataset.crumb === 'subject') current.topicId = current.paragraphId = null;
     if (el.dataset.crumb === 'topic') current.paragraphId = null;
@@ -569,12 +619,13 @@ function renderParagraph(sub, top, p) {
   const history = Array.isArray(p.history) ? p.history : [];
   const quizzes = Array.isArray(personalQuizzes[p.id]) ? personalQuizzes[p.id] : [];
   view.innerHTML = `<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button>
-    <div class="article-actions"><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button>${p.quiz?.questions?.length ? '<button class="button button-quiet" id="playAttachedQuiz">Пройти квіз</button>' : ''}${p.flashcards?.cards?.length ? '<button class="button button-quiet" id="openAttachedFlashcards">Флеш-картки за конспектом</button>' : ''}${(personalFlashcards[p.id] || []).length ? '<button class="button button-quiet" id="openFlashcards">Мої флеш-картки</button>' : ''}${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
+    <div class="article-actions"><button class="button button-primary" id="shareParagraph">Поділитися</button><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button>${p.quiz?.questions?.length ? '<button class="button button-quiet" id="playAttachedQuiz">Пройти квіз</button>' : ''}${p.flashcards?.cards?.length ? '<button class="button button-quiet" id="openAttachedFlashcards">Флеш-картки за конспектом</button>' : ''}${(personalFlashcards[p.id] || []).length ? '<button class="button button-quiet" id="openFlashcards">Мої флеш-картки</button>' : ''}${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
     <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body">${esc(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
     ${quizzes.length ? `<section class="personal-note"><div class="section-title"><h2>Мої квізи</h2><span>Зберігаються в цьому браузері</span></div><div class="personal-list">${quizzes.map((quiz, index) => `<button class="personal-item" data-start-quiz="${index}"><span><strong>${esc(quiz.title)}</strong><small>${quiz.questions.length} запитань</small></span><span class="personal-status">Почати →</span></button>`).join('')}</div></section>` : ''}
     <section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id] || '')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>
     <section class="comments-panel"><div class="section-title"><h2>Коментарі</h2><span id="commentCount">Завантаження…</span></div><p class="auth-copy">Коментувати можуть лише користувачі, які увійшли. Ліміт: 4 коментарі за 10 хвилин і 15 за добу.</p>${currentUser ? `<form id="commentForm" class="comment-form"><textarea name="body" maxlength="1200" minlength="2" required placeholder="Запитай або доповни матеріал…"></textarea><button class="button button-primary" type="submit">Надіслати коментар</button></form>` : `<button class="button button-quiet" id="commentSignIn">Увійди, щоб коментувати</button>`}<div id="commentList" class="comment-list"><p class="auth-copy">Завантажую коментарі…</p></div></section>`;
-  $('#backToTopic').onclick = () => { current.paragraphId = null; render(); };
+  $('#backToTopic').onclick = () => { clearSharedParagraphUrl(); current.paragraphId = null; render(); };
+  $('#shareParagraph').onclick = () => shareParagraph(sub, top, p);
   $('#favoriteParagraph').onclick = () => { readerPrefs.favorites = readerPrefs.favorites.includes(p.id) ? readerPrefs.favorites.filter((id) => id !== p.id) : [p.id, ...readerPrefs.favorites]; saveReaderPrefs(); render(); };
   $('#markParagraphRead').onclick = () => { readerPrefs.read[p.id] = !readerPrefs.read[p.id]; saveReaderPrefs(); render(); };
   $('#savePersonalNote').onclick = () => { const value = $('#personalNoteInput').value.trim(); if (value) readerPrefs.notes[p.id] = value; else delete readerPrefs.notes[p.id]; saveReaderPrefs(); notify('Особисту нотатку збережено на цьому пристрої.'); };
@@ -745,7 +796,7 @@ async function deleteComment(id, paragraphId) {
   await loadComments(paragraphId);
 }
 function renderSearch(query) {
-  const q=query.trim().toLocaleLowerCase('uk'); if(!q){render();return;}
+  const q=query.trim().toLocaleLowerCase('uk'); if(!q){render();return;} clearSharedParagraphUrl();
   setBreadcrumbs([{label:'Пошук'}]);const results=[];
   data.forEach(sub=>sub.topics.forEach(top=>top.paragraphs.forEach(p=>{const tags=Array.isArray(p.tags)?p.tags:[];const hay=[sub.name,top.name,top.description,p.name,p.summary,p.content,...tags].join(' ').toLocaleLowerCase('uk');if(hay.includes(q))results.push({sub,top,p,tags});})));
   view.innerHTML=`<div class="welcome-row"><div><span class="eyebrow">ПОШУК У БІБЛІОТЕЦІ</span><h1>Результати</h1><p>${results.length?`За запитом «${esc(query)}» знайдено: ${results.length}`:`За запитом «${esc(query)}» нічого не знайдено`}.</p></div></div>${results.length?`<div class="search-results">${results.map(({sub,top,p,tags})=>`<article class="search-result" data-result="${esc(sub.id)}|${esc(top.id)}|${esc(p.id)}"><small>${esc(sub.name)} &nbsp;›&nbsp; ${esc(top.name)}</small><p><strong>${esc(p.name)}</strong></p><p>${esc(p.summary||p.content.slice(0,120))}</p>${tags.length?`<div class="tag-list">${tags.map((tag)=>`<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>`:''}</article>`).join('')}</div>`:`<div class="empty-state"><div class="empty-icon">🔎</div><h3>Матеріалів не знайдено</h3><p>Спробуй інше слово або перевір назву предмета й теми.</p></div>`}`;
@@ -792,7 +843,7 @@ function labelsWord(kind){return {subject:'Предмет',topic:'Тему',para
 async function removeItem(kind,id){if(!canManage())return;const words={subject:'предмет разом з усіма його темами й параграфами',topic:'тему разом з усіма її параграфами',paragraph:'параграф'};if(!confirm(`Видалити ${words[kind]}? Цю дію не можна скасувати.`))return;const previousData=structuredClone(data);if(kind==='subject'){data=data.filter(x=>x.id!==id);current={subjectId:null,topicId:null,paragraphId:null};}if(kind==='topic'){const sub=subject(current.subjectId);sub.topics=sub.topics.filter(x=>x.id!==id);current.topicId=null;}if(kind==='paragraph'){const top=topic(subject(current.subjectId),current.topicId);top.paragraphs=top.paragraphs.filter(x=>x.id!==id);current.paragraphId=null;}if(!await saveData())data=previousData;else notify('Матеріал видалено');render();}
 function backup(){const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),subjects:data},null,2)],{type:'application/json'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='tetrad-backup.json';link.click();URL.revokeObjectURL(link.href);}
 async function importBackup(file){if(!canManage())return;const previousData=structuredClone(data);try{const parsed=JSON.parse(await file.text());const candidate=Array.isArray(parsed)?parsed:parsed.subjects;if(!Array.isArray(candidate)||candidate.some(s=>typeof s.name!=='string'||!Array.isArray(s.topics)))throw new Error();if(!confirm(`Замінити поточну бібліотеку? Буде імпортовано предметів: ${candidate.length}.`))return;data=candidate;current={subjectId:null,topicId:null,paragraphId:null};if(!await saveData())data=previousData;else notify('Спільну бібліотеку оновлено');render();}catch{data=previousData;notify('Цей файл не схожий на копію бібліотеки.');}}
-$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
+$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();clearSharedParagraphUrl();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
 $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#googleSignInButton').addEventListener('click',signInWithGoogle);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
