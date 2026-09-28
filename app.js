@@ -97,6 +97,81 @@ function openParagraph(sub, top, p) {
   saveReaderPrefs();
   render();
 }
+function notePromptMarkup(prefix) {
+  return `<details class="note-prompt-box" open><summary>Промпт для якісного конспекту</summary><p class="auth-copy">1. Встав сюди джерело або чернетку конспекту. 2. Скопіюй промпт і надішли його ШІ. 3. Перевір відповідь і встав готовий конспект замість джерела. Промпт враховує лише текст у полі; якщо матеріал на фото, спочатку попроси ШІ розпізнати його.</p><div class="field"><label for="${prefix}NotePrompt">Готовий промпт</label><textarea id="${prefix}NotePrompt" readonly></textarea><button type="button" class="button button-quiet" id="${prefix}CopyNotePrompt">Скопіювати промпт</button></div></details>`;
+}
+function buildNotePrompt(prefix) {
+  const isSubmission = prefix === 'submission';
+  const getValue = (id) => $(`#${prefix}${id}`)?.value.trim() || '';
+  const subjectName = isSubmission ? getValue('Subject') : (subject(current.subjectId)?.name || '');
+  const topicName = isSubmission ? getValue('Topic') : (topic(subject(current.subjectId), current.topicId)?.name || '');
+  const title = getValue(isSubmission ? 'Title' : 'Name');
+  const summary = getValue('Summary');
+  const content = getValue('Content');
+  return `Ти — помічник учня. Перетвори джерело нижче на точний, систематизований і зрозумілий конспект українською мовою.
+
+Правила:
+• Спирайся на надане джерело. Не вигадуй фактів, дат, формул і визначень.
+• Якщо в джерелі є суперечність або бракує важливої інформації, коротко познач це й не домислюй.
+• Пояснюй складне простими словами, зберігаючи правильні терміни.
+• Прибирай повтори, але не викидай важливі подробиці.
+• Пиши короткими абзацами та списками. Не використовуй таблиці, Markdown, HTML, вступи чи висновки від себе.
+• Дотримуйся однакової структури нижче. Кольорові позначки — це емодзі-маркери; залишай їх у тексті.
+• Не перевантажуй конспект маркерами: використовуй кожен лише там, де він справді доречний.
+
+Структура:
+НАЗВА ТЕМИ
+
+🟨 ГОЛОВНЕ
+Одним-двома реченнями поясни суть теми.
+
+🟦 КЛЮЧОВІ ПОНЯТТЯ
+Важливі терміни списком: термін — коротке й точне пояснення.
+
+📚 ОСНОВНИЙ КОНСПЕКТ
+Логічні підрозділи з короткими поясненнями та списками.
+
+🟥 ВАЖЛИВО НЕ ПЕРЕПЛУТАТИ
+Відмінності, винятки або типові помилки — лише якщо про них ідеться в джерелі.
+
+🟩 ПРИКЛАДИ
+Приклади з джерела, якщо вони є. Не вигадуй прикладів, які можуть змінити зміст.
+
+🟪 ДАТИ, ФОРМУЛИ Й ІМЕНА
+Додай цей розділ, лише якщо в джерелі є відповідні дані.
+
+✅ КОРОТКО ДЛЯ ПОВТОРЕННЯ
+3–5 найважливіших думок.
+
+Перевір перед відповіддю, що конспект точний, послідовний, читабельний і не містить вигаданих фактів. Поверни тільки готовий конспект.
+
+Предмет: ${subjectName || '[предмет]'}
+Тема: ${topicName || '[тема]'}
+Назва: ${title || '[назва конспекту]'}
+${summary ? `Короткий опис: ${summary}\n` : ''}
+Джерело або чернетка:
+${content || '[Спочатку встав матеріал або чернетку в поле конспекту.]'}`;
+}
+function bindNotePrompt(prefix) {
+  const isSubmission = prefix === 'submission';
+  const sourceFields = isSubmission ? ['Subject', 'Topic', 'Title', 'Summary', 'Content'] : ['Name', 'Summary', 'Content'];
+  const refresh = () => { $(`#${prefix}NotePrompt`).value = buildNotePrompt(prefix); };
+  sourceFields.forEach((name) => $(`#${prefix}${name}`)?.addEventListener('input', refresh));
+  refresh();
+  $(`#${prefix}CopyNotePrompt`).addEventListener('click', async () => {
+    if (($(`#${prefix}Content`)?.value.trim().length || 0) < 20) {
+      notify('Спочатку встав у поле конспекту матеріал для опрацювання — хоча б 20 символів.');
+      $(`#${prefix}Content`)?.focus();
+      return;
+    }
+    const field = $(`#${prefix}NotePrompt`);
+    const prompt = buildNotePrompt(prefix);
+    field.value = prompt;
+    try { await navigator.clipboard.writeText(prompt); }
+    catch { field.focus(); field.select(); document.execCommand('copy'); }
+    notify('Промпт скопійовано. Встав його в ШІ, а готову відповідь поверни в поле конспекту.');
+  });
+}
 function clearSharedParagraphUrl() {
   const url = new URL(location.href);
   if (!url.searchParams.has('subject') && !url.searchParams.has('topic') && !url.searchParams.has('paragraph')) return;
@@ -506,17 +581,17 @@ async function openSubmissionFlow() {
   if (!currentUser) { $('#authDialog').showModal(); return; }
   const options = $('#subjectOptions');
   options.innerHTML = data.map((item) => `<option value="${esc(item.name)}"></option>`).join('');
+  $('#submissionForm').reset();
   $('#submissionSubject').value = subject(current.subjectId)?.name || '';
   $('#submissionTopic').value = topic(subject(current.subjectId), current.topicId)?.name || '';
-  $('#submissionForm').reset();
+  $('#submissionNotePrompt').innerHTML = notePromptMarkup('submission');
   $('#submissionStudyTools').innerHTML = additionalStudyToolsMarkup('submission');
+  bindNotePrompt('submission');
   bindAdditionalStudyTools('submission');
   const imagePreview = $('#submissionImagePreview');
   imagePreview.src = '';
   imagePreview.style.display = 'none';
   delete imagePreview.dataset.newImage;
-  $('#submissionSubject').value = subject(current.subjectId)?.name || '';
-  $('#submissionTopic').value = topic(subject(current.subjectId), current.topicId)?.name || '';
   $('#submissionDialog').showModal();
   $('#submissionSubject').focus();
 }
@@ -809,8 +884,8 @@ function openEditor(kind,id=null) {
   const labels={subject:['предмет','Предмет'],topic:['тему','Тему'],paragraph:['параграф','Параграф']};$('#dialogTitle').textContent=`${isEdit?'Змінити':'Додати'} ${labels[kind][0]}`;
   if(kind==='subject') fields.innerHTML=`<div class="field"><label for="itemName">Назва предмета</label><input id="itemName" name="name" maxlength="60" required placeholder="Наприклад, Географія" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemIcon">Значок (емодзі)</label><input id="itemIcon" name="icon" maxlength="4" value="${esc(item?.icon||'📚')}" placeholder="📚"><small>Можна залишити 📚 або вибрати будь-яке емодзі.</small></div><div class="color-row"><div class="field"><label for="itemColor">Колір картки</label><input id="itemColor" name="color" type="color" value="${esc(item?.color||colors[data.length%colors.length].color)}"></div><div class="field"><label for="itemTint">Світлий фон</label><input id="itemTint" name="tint" type="color" value="${esc(item?.tint||colors[data.length%colors.length].tint)}"></div></div>`;
   if(kind==='topic') fields.innerHTML=`<div class="field"><label for="itemName">Назва теми</label><input id="itemName" name="name" maxlength="90" required placeholder="Наприклад, Клітина та її будова" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemDescription">Короткий опис</label><textarea id="itemDescription" name="description" maxlength="240" placeholder="Що входить до цієї теми?">${esc(item?.description||'')}</textarea></div>`;
-  if(kind==='paragraph') fields.innerHTML=`<div class="field"><label for="itemName">Назва параграфа</label><input id="itemName" name="name" maxlength="110" required placeholder="Наприклад, Клітинна мембрана" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemSummary">Короткий опис</label><input id="itemSummary" name="summary" maxlength="180" placeholder="Про що цей матеріал?" value="${esc(item?.summary||'')}"></div><div class="field"><label for="itemTags">Теги</label><input id="itemTags" name="tags" maxlength="240" value="${esc((item?.tags||[]).join(', '))}" placeholder="контрольна, формули, важливо"><small>Розділяй теги комами — за ними можна шукати матеріали.</small></div><div class="field"><label for="itemContent">Нотатки та корисні матеріали</label><textarea id="itemContent" name="content" maxlength="20000" style="min-height:170px" placeholder="Запиши пояснення, формули, важливі дати чи власні підказки…">${esc(item?.content||'')}</textarea></div><div class="field"><label for="itemImage">Зображення</label><div class="upload-box"><input id="itemImage" name="image" type="file" accept="image/*"><small>Додай схему, мапу чи фото конспекту. Великі зображення буде автоматично зменшено.</small><img id="imagePreview" class="image-preview" alt="Попередній перегляд зображення">${item?.image?'<button type="button" id="removeImage" class="text-button danger-action">Видалити зображення</button>':''}</div></div>`;
-  if(kind==='paragraph') { fields.insertAdjacentHTML('beforeend', additionalStudyToolsMarkup('item', item?.quiz, item?.flashcards)); bindAdditionalStudyTools('item'); }
+  if(kind==='paragraph') fields.innerHTML=`<div class="field"><label for="itemName">Назва параграфа</label><input id="itemName" name="name" maxlength="110" required placeholder="Наприклад, Клітинна мембрана" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemSummary">Короткий опис</label><input id="itemSummary" name="summary" maxlength="180" placeholder="Про що цей матеріал?" value="${esc(item?.summary||'')}"></div><div class="field"><label for="itemTags">Теги</label><input id="itemTags" name="tags" maxlength="240" value="${esc((item?.tags||[]).join(', '))}" placeholder="контрольна, формули, важливо"><small>Розділяй теги комами — за ними можна шукати матеріали.</small></div><div class="field"><label for="itemContent">Джерело або чернетка конспекту</label><textarea id="itemContent" name="content" maxlength="20000" style="min-height:170px" placeholder="Встав матеріал або чернетку. Після роботи ШІ заміни її готовим конспектом…">${esc(item?.content||'')}</textarea></div><div class="field"><label for="itemImage">Зображення</label><div class="upload-box"><input id="itemImage" name="image" type="file" accept="image/*"><small>Додай схему, мапу чи фото конспекту. Великі зображення буде автоматично зменшено.</small><img id="imagePreview" class="image-preview" alt="Попередній перегляд зображення">${item?.image?'<button type="button" id="removeImage" class="text-button danger-action">Видалити зображення</button>':''}</div></div>`;
+  if(kind==='paragraph') { $('#itemContent').parentElement.insertAdjacentHTML('afterend', notePromptMarkup('item')); fields.insertAdjacentHTML('beforeend', additionalStudyToolsMarkup('item', item?.quiz, item?.flashcards)); bindNotePrompt('item'); bindAdditionalStudyTools('item'); }
   if(kind==='paragraph'&&item?.image){const img=$('#imagePreview');img.src=item.image;img.style.display='block';$('#removeImage').onclick=()=>{img.dataset.removed='true';img.style.display='none';$('#removeImage').remove();};}
   if(isEdit&&kind!=='paragraph')fields.insertAdjacentHTML('beforeend',`<button type="button" class="text-button danger-action" id="deleteRecord">Видалити ${kind==='subject'?'предмет разом з усіма темами та параграфами':'тему разом з усіма параграфами'}</button>`);
   $('#deleteRecord')?.addEventListener('click',()=>{closeEditor();removeItem(kind,id);});
