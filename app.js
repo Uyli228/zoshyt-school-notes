@@ -51,6 +51,7 @@ let quizAnswers = [];
 let activeFlashcardId = null;
 let flashcardIndex = 0;
 let flashcardShowingBack = false;
+let activeFlashcardDeck = [];
 let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
@@ -458,6 +459,8 @@ async function openSubmissionFlow() {
   $('#submissionSubject').value = subject(current.subjectId)?.name || '';
   $('#submissionTopic').value = topic(subject(current.subjectId), current.topicId)?.name || '';
   $('#submissionForm').reset();
+  $('#submissionStudyTools').innerHTML = additionalStudyToolsMarkup('submission');
+  bindAdditionalStudyTools('submission');
   const imagePreview = $('#submissionImagePreview');
   imagePreview.src = '';
   imagePreview.style.display = 'none';
@@ -472,9 +475,14 @@ async function renderSubmissionQueue() {
   const generation = ++submissionQueryGeneration;
   setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: 'Пропозиції' }]);
   view.innerHTML = '<div class="page-heading"><div><span class="eyebrow">МОДЕРАЦІЯ</span><h1>Пропозиції конспектів</h1><p>Перевір матеріал перед публікацією у спільній бібліотеці.</p></div></div><div class="empty-state"><p>Завантажую пропозиції…</p></div>';
-  const { data: submissions, error } = await cloudClient.from('library_submissions')
-    .select('id,subject_name,topic_name,title,summary,content,image_data,created_at')
+  let { data: submissions, error } = await cloudClient.from('library_submissions')
+    .select('id,subject_name,topic_name,title,summary,content,image_data,quiz_data,flashcards_data,created_at')
     .eq('status', 'pending').order('created_at', { ascending: true });
+  if (error && /quiz_data|flashcards_data|schema cache/i.test(error.message || '')) {
+    ({ data: submissions, error } = await cloudClient.from('library_submissions')
+      .select('id,subject_name,topic_name,title,summary,content,image_data,created_at')
+      .eq('status', 'pending').order('created_at', { ascending: true }));
+  }
   if (generation !== submissionQueryGeneration || activeScreen !== 'submissions') return;
   if (error) {
     console.error(error);
@@ -484,7 +492,7 @@ async function renderSubmissionQueue() {
   }
   pendingSubmissionCount = submissions.length;
   renderAccessState();
-  view.innerHTML = `<div class="page-heading"><div><span class="eyebrow">МОДЕРАЦІЯ</span><h1>Пропозиції конспектів</h1><p>${submissions.length ? 'Перевір матеріал перед публікацією у спільній бібліотеці.' : 'Нових пропозицій поки немає.'}</p></div></div>${submissions.length ? `<div class="submission-list">${submissions.map((item) => `<article class="submission-card"><div class="submission-meta"><span>${esc(item.subject_name)} <b>›</b> ${esc(item.topic_name)}</span><time>${new Date(item.created_at).toLocaleDateString('uk-UA')}</time></div><h2>${esc(item.title)}</h2>${item.summary ? `<p class="article-summary">${esc(item.summary)}</p>` : ''}${item.image_data ? `<img class="submission-image" src="${esc(item.image_data)}" alt="Зображення до пропозиції ${esc(item.title)}">` : ''}<details><summary>Переглянути конспект</summary><div class="submission-content">${esc(item.content)}</div></details><div class="submission-actions"><button class="button button-quiet" data-reject-submission="${esc(item.id)}">Відхилити</button><button class="button button-primary" data-approve-submission="${esc(item.id)}">Опублікувати</button></div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">✅</div><h3>Усе перевірено</h3><p>Коли учні надішлють нові конспекти, вони з’являться тут.</p></div>'}`;
+  view.innerHTML = `<div class="page-heading"><div><span class="eyebrow">МОДЕРАЦІЯ</span><h1>Пропозиції конспектів</h1><p>${submissions.length ? 'Перевір матеріал перед публікацією у спільній бібліотеці.' : 'Нових пропозицій поки немає.'}</p></div></div>${submissions.length ? `<div class="submission-list">${submissions.map((item) => `<article class="submission-card"><div class="submission-meta"><span>${esc(item.subject_name)} <b>›</b> ${esc(item.topic_name)}</span><time>${new Date(item.created_at).toLocaleDateString('uk-UA')}</time></div><h2>${esc(item.title)}</h2>${item.summary ? `<p class="article-summary">${esc(item.summary)}</p>` : ''}${item.image_data ? `<img class="submission-image" src="${esc(item.image_data)}" alt="Зображення до пропозиції ${esc(item.title)}">` : ''}<details><summary>Переглянути конспект</summary><div class="submission-content">${esc(item.content)}</div></details>${item.quiz_data || item.flashcards_data ? `<details class="submission-study-preview"><summary>Додаткові матеріали для повторення</summary>${item.quiz_data ? `<h3>Квіз · ${item.quiz_data.questions?.length || 0} запитань</h3><pre>${esc(JSON.stringify(item.quiz_data, null, 2))}</pre>` : ''}${item.flashcards_data ? `<h3>Флеш-картки · ${item.flashcards_data.cards?.length || 0}</h3><pre>${esc(JSON.stringify(item.flashcards_data, null, 2))}</pre>` : ''}</details>` : ''}<div class="submission-actions"><button class="button button-quiet" data-reject-submission="${esc(item.id)}">Відхилити</button><button class="button button-primary" data-approve-submission="${esc(item.id)}">Опублікувати</button></div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">✅</div><h3>Усе перевірено</h3><p>Коли учні надішлють нові конспекти, вони з’являться тут.</p></div>'}`;
   view.querySelectorAll('[data-approve-submission]').forEach((button) => button.addEventListener('click', () => reviewSubmission(button.dataset.approveSubmission, true)));
   view.querySelectorAll('[data-reject-submission]').forEach((button) => button.addEventListener('click', () => reviewSubmission(button.dataset.rejectSubmission, false)));
 }
@@ -506,6 +514,9 @@ async function submitSuggestion(event) {
   event.preventDefault();
   if (!currentUser || !cloudReady) { notify('Увійди, щоб надіслати конспект.'); return; }
   const form = new FormData(event.currentTarget);
+  let studyTools;
+  try { studyTools = collectAdditionalStudyTools('submission'); }
+  catch (error) { notify(error.message); return; }
   const suggestion = {
     author_id: currentUser.id,
     subject_name: String(form.get('subject_name') || '').trim(),
@@ -515,11 +526,15 @@ async function submitSuggestion(event) {
     content: String(form.get('content') || '').trim(),
     image_data: $('#submissionImagePreview').dataset.newImage || ''
   };
+  if (studyTools.quiz) suggestion.quiz_data = studyTools.quiz;
+  if (studyTools.flashcards) suggestion.flashcards_data = studyTools.flashcards;
   if (suggestion.content.length < 20) { notify('Додай трохи більше змісту — від 20 символів.'); return; }
   const { error } = await cloudClient.from('library_submissions').insert(suggestion);
   if (error) {
     console.error(error);
-    notify(error.code === 'P0001' ? 'Забагато пропозицій за короткий час. Спробуй пізніше.' : 'Не вдалося надіслати конспект. Перевір поля й спробуй ще раз.');
+    if (error.code === 'P0001') notify('Забагато пропозицій за короткий час. Спробуй пізніше.');
+    else if (/quiz_data|flashcards_data/i.test(error.message || '')) notify('Щоб надіслати квіз або картки, адміністратор має оновити базу файлом supabase/submissions.sql.');
+    else notify('Не вдалося надіслати конспект. Перевір поля й спробуй ще раз.');
     return;
   }
   $('#submissionDialog').close();
@@ -554,7 +569,7 @@ function renderParagraph(sub, top, p) {
   const history = Array.isArray(p.history) ? p.history : [];
   const quizzes = Array.isArray(personalQuizzes[p.id]) ? personalQuizzes[p.id] : [];
   view.innerHTML = `<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button>
-    <div class="article-actions"><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button><button class="button button-quiet" id="openQuizDialog">Створити квіз</button><button class="button button-quiet" id="openFlashcards">Флеш-картки${(personalFlashcards[p.id] || []).length ? ` · ${(personalFlashcards[p.id] || []).length}` : ''}</button>${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
+    <div class="article-actions"><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button>${p.quiz?.questions?.length ? '<button class="button button-quiet" id="playAttachedQuiz">Пройти квіз</button>' : ''}${p.flashcards?.cards?.length ? '<button class="button button-quiet" id="openAttachedFlashcards">Флеш-картки за конспектом</button>' : ''}${(personalFlashcards[p.id] || []).length ? '<button class="button button-quiet" id="openFlashcards">Мої флеш-картки</button>' : ''}${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
     <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body">${esc(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
     ${quizzes.length ? `<section class="personal-note"><div class="section-title"><h2>Мої квізи</h2><span>Зберігаються в цьому браузері</span></div><div class="personal-list">${quizzes.map((quiz, index) => `<button class="personal-item" data-start-quiz="${index}"><span><strong>${esc(quiz.title)}</strong><small>${quiz.questions.length} запитань</small></span><span class="personal-status">Почати →</span></button>`).join('')}</div></section>` : ''}
     <section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id] || '')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>
@@ -567,28 +582,68 @@ function renderParagraph(sub, top, p) {
   $('#reportParagraph').onclick = () => openReportDialog(sub, top, p);
   $('#editParagraph')?.addEventListener('click', () => openEditor('paragraph', p.id));
   $('#deleteParagraph')?.addEventListener('click', () => removeItem('paragraph', p.id));
-  $('#openQuizDialog').onclick = () => openQuizDialog(sub, top, p);
-  $('#openFlashcards').onclick = () => openFlashcardDialog(p.id);
+  $('#playAttachedQuiz')?.addEventListener('click', () => beginQuiz(p.quiz));
+  $('#openAttachedFlashcards')?.addEventListener('click', () => openFlashcardDialog(p.id, p.flashcards));
+  $('#openFlashcards')?.addEventListener('click', () => openFlashcardDialog(p.id));
   $('#commentSignIn')?.addEventListener('click', () => $('#authDialog').showModal());
   $('#commentForm')?.addEventListener('submit', (event) => submitComment(event, p.id));
   view.querySelectorAll('[data-start-quiz]').forEach((button) => button.addEventListener('click', () => beginQuiz(quizzes[Number(button.dataset.startQuiz)])));
   loadComments(p.id);
 }
-function openQuizDialog(sub, top, p) {
-  const lesson = [p.name, p.summary, p.content].filter(Boolean).join('\n\n');
-  $('#quizPrompt').value = `Створи навчальний квіз українською мовою за матеріалом нижче. Перевір розуміння, а не лише запам'ятовування. Не додавай фактів, яких немає в матеріалі. Зроби 5 запитань із 4 варіантами відповіді, лише один правильний. Поверни тільки коректний JSON без Markdown і пояснень за схемою: {"title":"Коротка назва квізу","questions":[{"question":"Текст запитання","options":["Варіант 1","Варіант 2","Варіант 3","Варіант 4"],"answer":0,"explanation":"Коротке пояснення правильної відповіді"}]}. Поле answer — індекс правильної відповіді, рахуючи від 0. До 30 запитань.\n\nПредмет: ${sub.name}\nТема: ${top.name}\nПараграф: ${p.name}\n\nМатеріал:\n${lesson}`;
-  $('#quizJson').value = '';
-  $('#quizImportHint').textContent = '';
-  $('#quizDialog').showModal();
+function additionalStudyToolsMarkup(prefix, quiz = null, flashcards = null) {
+  const hasQuiz = Boolean(quiz?.questions?.length);
+  const hasFlashcards = Boolean(flashcards?.cards?.length);
+  const enabled = hasQuiz || hasFlashcards;
+  return `<details class="additional-params" id="${prefix}AdditionalDetails" ${enabled ? 'open' : ''}><summary>Додаткові параметри</summary><p class="auth-copy">За бажанням додай до конспекту квіз, флеш-картки або обидва матеріали. Промпт врахує текст конспекту.</p>
+    <label class="study-tool-option"><input type="checkbox" id="${prefix}EnableQuiz" ${hasQuiz ? 'checked' : ''}><span><strong>Додати квіз</strong><small>Питання з варіантами відповіді</small></span></label>
+    <section id="${prefix}QuizFields" class="study-tool-fields" ${hasQuiz ? '' : 'hidden'}><div class="field"><label for="${prefix}QuizPrompt">Промпт для нейромережі</label><textarea id="${prefix}QuizPrompt" readonly placeholder="Натисни кнопку нижче, щоб створити промпт із конспекту."></textarea><button type="button" class="button button-quiet" data-copy-study-prompt="${prefix}:quiz">Сформувати й скопіювати промпт для квізу</button></div><div class="field"><label for="${prefix}QuizJson">Відповідь нейромережі (JSON)</label><textarea id="${prefix}QuizJson" maxlength="30000" placeholder='{"title":"...","questions":[{"question":"...","options":["...","..."],"answer":0,"explanation":"..."}]}'>${hasQuiz ? esc(JSON.stringify(quiz, null, 2)) : ''}</textarea><small>До 30 запитань. Встав повну відповідь нейромережі.</small></div></section>
+    <label class="study-tool-option"><input type="checkbox" id="${prefix}EnableFlashcards" ${hasFlashcards ? 'checked' : ''}><span><strong>Додати флеш-картки</strong><small>Картки «запитання → відповідь»</small></span></label>
+    <section id="${prefix}FlashcardFields" class="study-tool-fields" ${hasFlashcards ? '' : 'hidden'}><div class="field"><label for="${prefix}FlashcardPrompt">Промпт для нейромережі</label><textarea id="${prefix}FlashcardPrompt" readonly placeholder="Натисни кнопку нижче, щоб створити промпт із конспекту."></textarea><button type="button" class="button button-quiet" data-copy-study-prompt="${prefix}:flashcards">Сформувати й скопіювати промпт для карток</button></div><div class="field"><label for="${prefix}FlashcardJson">Відповідь нейромережі (JSON)</label><textarea id="${prefix}FlashcardJson" maxlength="30000" placeholder='{"title":"...","cards":[{"front":"...","back":"..."}]}'>${hasFlashcards ? esc(JSON.stringify(flashcards, null, 2)) : ''}</textarea><small>До 40 карток. Встав повну відповідь нейромережі.</small></div></section></details>`;
 }
-async function copyQuizPrompt() {
-  try { await navigator.clipboard.writeText($('#quizPrompt').value); }
-  catch { $('#quizPrompt').focus(); $('#quizPrompt').select(); document.execCommand('copy'); }
-  notify('Промпт скопійовано. Встав його в обрану нейромережу.');
+function bindAdditionalStudyTools(prefix) {
+  const quizToggle = $(`#${prefix}EnableQuiz`);
+  const cardsToggle = $(`#${prefix}EnableFlashcards`);
+  if (!quizToggle || !cardsToggle) return;
+  quizToggle.addEventListener('change', () => { $(`#${prefix}QuizFields`).hidden = !quizToggle.checked; if (quizToggle.checked) $(`#${prefix}AdditionalDetails`).open = true; });
+  cardsToggle.addEventListener('change', () => { $(`#${prefix}FlashcardFields`).hidden = !cardsToggle.checked; if (cardsToggle.checked) $(`#${prefix}AdditionalDetails`).open = true; });
+  document.querySelectorAll(`[data-copy-study-prompt^="${prefix}:"]`).forEach((button) => button.addEventListener('click', () => copyStudyPrompt(prefix, button.dataset.copyStudyPrompt.split(':')[1])));
+}
+function buildStudyPrompt(prefix, kind) {
+  const isSubmission = prefix === 'submission';
+  const title = $(`#${prefix}${isSubmission ? 'Title' : 'Name'}`).value.trim();
+  const summary = $(`#${prefix}Summary`).value.trim();
+  const content = $(`#${prefix}Content`).value.trim();
+  if (content.length < 20) throw new Error('Спочатку додай щонайменше 20 символів конспекту.');
+  const subjectName = isSubmission ? $('#submissionSubject').value.trim() : (subject(current.subjectId)?.name || '');
+  const topicName = isSubmission ? $('#submissionTopic').value.trim() : (topic(subject(current.subjectId), current.topicId)?.name || '');
+  const context = `Предмет: ${subjectName}\nТема: ${topicName}\nНазва конспекту: ${title}\n${summary ? `Короткий опис: ${summary}\n` : ''}`;
+  if (kind === 'quiz') return `Створи навчальний квіз українською мовою лише за матеріалом нижче. Перевір розуміння й застосування знань, а не тільки запам'ятовування. Не вигадуй фактів поза конспектом. Створи 5 запитань; у кожному дай 4 варіанти й рівно одну правильну відповідь. Поверни тільки валідний JSON без Markdown та вступного тексту у форматі: {"title":"Назва квізу","questions":[{"question":"Текст запитання","options":["Варіант 1","Варіант 2","Варіант 3","Варіант 4"],"answer":0,"explanation":"Коротке пояснення правильної відповіді"}]}. Поле answer — індекс правильної відповіді, починаючи з 0. Не додавай інших ключів.\n\n${context}\nКонспект:\n${content}`;
+  return `Створи 8–12 навчальних флеш-карток українською мовою лише за конспектом нижче. На лицьовому боці (front) дай коротке запитання, термін або завдання; на звороті (back) — чітку стислу відповідь. Перевір важливі поняття, причинно-наслідкові зв'язки, формули чи дати, якщо вони є в тексті. Одна картка — одна думка. Не вигадуй фактів поза конспектом. Поверни тільки валідний JSON без Markdown та вступного тексту у форматі: {"title":"Назва набору","cards":[{"front":"Запитання або термін","back":"Відповідь або пояснення"}]}. Не додавай інших ключів.\n\n${context}\nКонспект:\n${content}`;
+}
+async function copyStudyPrompt(prefix, kind) {
+  try {
+    const prompt = buildStudyPrompt(prefix, kind);
+    const field = $(`#${prefix}${kind === 'quiz' ? 'QuizPrompt' : 'FlashcardPrompt'}`);
+    field.value = prompt;
+    try { await navigator.clipboard.writeText(prompt); }
+    catch { field.focus(); field.select(); document.execCommand('copy'); }
+    notify(kind === 'quiz' ? 'Промпт квізу скопійовано.' : 'Промпт флеш-карток скопійовано.');
+  } catch (error) { notify(error.message); }
+}
+function collectAdditionalStudyTools(prefix) {
+  const quizEnabled = $(`#${prefix}EnableQuiz`)?.checked || false;
+  const cardsEnabled = $(`#${prefix}EnableFlashcards`)?.checked || false;
+  return {
+    quiz: quizEnabled ? parseQuiz($(`#${prefix}QuizJson`).value.trim()) : null,
+    flashcards: cardsEnabled ? parseFlashcards($(`#${prefix}FlashcardJson`).value.trim()) : null
+  };
 }
 function parseQuiz(raw) {
+  if (!raw) throw new Error('Увімкнено квіз, але JSON ще не вставлено.');
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const parsed = JSON.parse(fenced ? fenced[1] : raw);
+  let parsed;
+  try { parsed = JSON.parse(fenced ? fenced[1] : raw); }
+  catch { throw new Error('Не вдалося прочитати JSON квізу. Скопіюй повну відповідь нейромережі.'); }
   const quiz = parsed?.quiz || parsed;
   if (!quiz || typeof quiz.title !== 'string' || !Array.isArray(quiz.questions) || quiz.questions.length < 1 || quiz.questions.length > 30) throw new Error('Формат квізу не відповідає прикладу.');
   const questions = quiz.questions.map((question) => {
@@ -597,18 +652,19 @@ function parseQuiz(raw) {
   });
   return { id: uid(), title: quiz.title.trim().slice(0, 100) || 'Квіз', questions };
 }
-function importQuiz() {
-  try {
-    if (!current.paragraphId) throw new Error('Спочатку відкрий параграф.');
-    const quiz = parseQuiz($('#quizJson').value.trim());
-    const next = [...(personalQuizzes[current.paragraphId] || []), quiz].slice(-10);
-    personalQuizzes[current.paragraphId] = next;
-    if (!savePersonalStore(QUIZZES_KEY, personalQuizzes)) return;
-    $('#quizDialog').close();
-    beginQuiz(quiz);
-  } catch (error) {
-    $('#quizImportHint').textContent = error instanceof SyntaxError ? 'Не вдалося прочитати JSON. Скопіюй увесь результат нейромережі ще раз.' : error.message;
-  }
+function parseFlashcards(raw) {
+  if (!raw) throw new Error('Увімкнено флеш-картки, але JSON ще не вставлено.');
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  let parsed;
+  try { parsed = JSON.parse(fenced ? fenced[1] : raw); }
+  catch { throw new Error('Не вдалося прочитати JSON флеш-карток. Скопіюй повну відповідь нейромережі.'); }
+  const deck = parsed?.flashcards || parsed;
+  if (!deck || typeof deck.title !== 'string' || !Array.isArray(deck.cards) || deck.cards.length < 1 || deck.cards.length > 40) throw new Error('Формат флеш-карток не відповідає прикладу.');
+  const cards = deck.cards.map((card) => {
+    if (typeof card.front !== 'string' || card.front.trim().length < 2 || card.front.length > 300 || typeof card.back !== 'string' || !card.back.trim() || card.back.length > 1000) throw new Error('Перевір поля front і back у кожній картці.');
+    return { front: card.front.trim(), back: card.back.trim() };
+  });
+  return { title: deck.title.trim().slice(0, 100) || 'Флеш-картки', cards };
 }
 function beginQuiz(quiz) {
   if (!quiz?.questions?.length) return;
@@ -637,38 +693,22 @@ function renderQuizScreen() {
   $('#nextQuizQuestion')?.addEventListener('click', () => { quizIndex++; renderQuizScreen(); });
 }
 function leaveQuiz() { activeScreen = 'library'; render(); }
-function openFlashcardDialog(paragraphId) {
+function openFlashcardDialog(paragraphId, sharedDeck = null) {
   activeFlashcardId = paragraphId;
   flashcardIndex = 0;
   flashcardShowingBack = false;
-  $('#flashcardFront').value = '';
-  $('#flashcardBack').value = '';
+  activeFlashcardDeck = [...(Array.isArray(sharedDeck?.cards) ? sharedDeck.cards : []), ...(personalFlashcards[paragraphId] || [])];
   updateFlashcardView();
   $('#flashcardDialog').showModal();
 }
 function updateFlashcardView() {
-  const cards = personalFlashcards[activeFlashcardId] || [];
-  const card = cards[flashcardIndex];
-  $('#flashcardCount').textContent = card ? `Картка ${flashcardIndex + 1} із ${cards.length}` : 'У цьому наборі ще немає карток.';
-  $('#flashcardFaceLabel').textContent = card ? (flashcardShowingBack ? 'Відповідь' : 'Запитання') : 'Додай картку, щоб почати';
+  const card = activeFlashcardDeck[flashcardIndex];
+  $('#flashcardCount').textContent = card ? `Картка ${flashcardIndex + 1} із ${activeFlashcardDeck.length}` : 'У цьому наборі ще немає карток.';
+  $('#flashcardFaceLabel').textContent = card ? (flashcardShowingBack ? 'Відповідь' : 'Запитання') : 'У цьому наборі ще немає карток';
   $('#flashcardFaceText').textContent = card ? (flashcardShowingBack ? card.back : card.front) : '☆';
   $('#flipFlashcard').disabled = !card;
   $('#previousFlashcard').disabled = !card || flashcardIndex === 0;
-  $('#nextFlashcard').disabled = !card || flashcardIndex >= cards.length - 1;
-}
-function addFlashcard() {
-  const front = $('#flashcardFront').value.trim();
-  const back = $('#flashcardBack').value.trim();
-  if (front.length < 2 || back.length < 1) { notify('Заповни запитання й відповідь.'); return; }
-  const cards = [...(personalFlashcards[activeFlashcardId] || []), { id: uid(), front, back }];
-  personalFlashcards[activeFlashcardId] = cards;
-  if (!savePersonalStore(FLASHCARDS_KEY, personalFlashcards)) return;
-  flashcardIndex = cards.length - 1;
-  flashcardShowingBack = false;
-  $('#flashcardFront').value = '';
-  $('#flashcardBack').value = '';
-  updateFlashcardView();
-  notify('Флеш-картку збережено в цьому браузері.');
+  $('#nextFlashcard').disabled = !card || flashcardIndex >= activeFlashcardDeck.length - 1;
 }
 async function loadComments(paragraphId) {
   const count = $('#commentCount');
@@ -719,6 +759,7 @@ function openEditor(kind,id=null) {
   if(kind==='subject') fields.innerHTML=`<div class="field"><label for="itemName">Назва предмета</label><input id="itemName" name="name" maxlength="60" required placeholder="Наприклад, Географія" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemIcon">Значок (емодзі)</label><input id="itemIcon" name="icon" maxlength="4" value="${esc(item?.icon||'📚')}" placeholder="📚"><small>Можна залишити 📚 або вибрати будь-яке емодзі.</small></div><div class="color-row"><div class="field"><label for="itemColor">Колір картки</label><input id="itemColor" name="color" type="color" value="${esc(item?.color||colors[data.length%colors.length].color)}"></div><div class="field"><label for="itemTint">Світлий фон</label><input id="itemTint" name="tint" type="color" value="${esc(item?.tint||colors[data.length%colors.length].tint)}"></div></div>`;
   if(kind==='topic') fields.innerHTML=`<div class="field"><label for="itemName">Назва теми</label><input id="itemName" name="name" maxlength="90" required placeholder="Наприклад, Клітина та її будова" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemDescription">Короткий опис</label><textarea id="itemDescription" name="description" maxlength="240" placeholder="Що входить до цієї теми?">${esc(item?.description||'')}</textarea></div>`;
   if(kind==='paragraph') fields.innerHTML=`<div class="field"><label for="itemName">Назва параграфа</label><input id="itemName" name="name" maxlength="110" required placeholder="Наприклад, Клітинна мембрана" value="${esc(item?.name||'')}"></div><div class="field"><label for="itemSummary">Короткий опис</label><input id="itemSummary" name="summary" maxlength="180" placeholder="Про що цей матеріал?" value="${esc(item?.summary||'')}"></div><div class="field"><label for="itemTags">Теги</label><input id="itemTags" name="tags" maxlength="240" value="${esc((item?.tags||[]).join(', '))}" placeholder="контрольна, формули, важливо"><small>Розділяй теги комами — за ними можна шукати матеріали.</small></div><div class="field"><label for="itemContent">Нотатки та корисні матеріали</label><textarea id="itemContent" name="content" maxlength="20000" style="min-height:170px" placeholder="Запиши пояснення, формули, важливі дати чи власні підказки…">${esc(item?.content||'')}</textarea></div><div class="field"><label for="itemImage">Зображення</label><div class="upload-box"><input id="itemImage" name="image" type="file" accept="image/*"><small>Додай схему, мапу чи фото конспекту. Великі зображення буде автоматично зменшено.</small><img id="imagePreview" class="image-preview" alt="Попередній перегляд зображення">${item?.image?'<button type="button" id="removeImage" class="text-button danger-action">Видалити зображення</button>':''}</div></div>`;
+  if(kind==='paragraph') { fields.insertAdjacentHTML('beforeend', additionalStudyToolsMarkup('item', item?.quiz, item?.flashcards)); bindAdditionalStudyTools('item'); }
   if(kind==='paragraph'&&item?.image){const img=$('#imagePreview');img.src=item.image;img.style.display='block';$('#removeImage').onclick=()=>{img.dataset.removed='true';img.style.display='none';$('#removeImage').remove();};}
   if(isEdit&&kind!=='paragraph')fields.insertAdjacentHTML('beforeend',`<button type="button" class="text-button danger-action" id="deleteRecord">Видалити ${kind==='subject'?'предмет разом з усіма темами та параграфами':'тему разом з усіма параграфами'}</button>`);
   $('#deleteRecord')?.addEventListener('click',()=>{closeEditor();removeItem(kind,id);});
@@ -729,6 +770,8 @@ function compressImage(file) { return new Promise((resolve,reject)=>{if(!file.ty
 function closeEditor(){ $('#editorDialog').close();editContext=null; }
 async function saveEditor(event) {
   event.preventDefault();if(!editContext)return;const {kind,id}=editContext;const form=new FormData(event.currentTarget);const name=String(form.get('name')||'').trim();
+  let studyTools = { quiz: null, flashcards: null };
+  if(kind==='paragraph') { try { studyTools = collectAdditionalStudyTools('item'); } catch(error) { notify(error.message); return; } }
   const previousData=structuredClone(data);
   if(kind==='subject'){
     if(id){Object.assign(subject(id),{name,icon:String(form.get('icon')||'📚').trim()||'📚',color:form.get('color'),tint:form.get('tint')});}
@@ -738,8 +781,8 @@ async function saveEditor(event) {
     else sub.topics.push({id:uid(),name,description:String(form.get('description')||'').trim(),paragraphs:[]});
   } else {
     const top=topic(subject(current.subjectId),current.topicId);const preview=$('#imagePreview');const existing=id?paragraph(top,id):null;let image=existing?.image||'';if(preview?.dataset.removed==='true')image='';if(preview?.dataset.newImage)image=preview.dataset.newImage;
-    const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),tags:[...new Set(String(form.get('tags')||'').split(',').map((tag)=>tag.trim()).filter(Boolean))],image};
-    if(id){const changed=['name','summary','content','tags','image'].some((key)=>JSON.stringify(existing[key]??(key==='tags'?[]:''))!==JSON.stringify(item[key]));const history=Array.isArray(existing.history)?existing.history:[];if(changed)existing.history=[...history,{name:existing.name,summary:existing.summary||'',content:existing.content||'',tags:existing.tags||[],image:existing.image||'',updatedAt:existing.updatedAt||new Date().toISOString()}].slice(-8);Object.assign(existing,item,{updatedAt:changed?new Date().toISOString():(existing.updatedAt||'')});}
+    const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),tags:[...new Set(String(form.get('tags')||'').split(',').map((tag)=>tag.trim()).filter(Boolean))],image,quiz:studyTools.quiz,flashcards:studyTools.flashcards};
+    if(id){const changed=['name','summary','content','tags','image','quiz','flashcards'].some((key)=>JSON.stringify(existing[key]??(key==='tags'?[]:''))!==JSON.stringify(item[key]));const history=Array.isArray(existing.history)?existing.history:[];if(changed)existing.history=[...history,{name:existing.name,summary:existing.summary||'',content:existing.content||'',tags:existing.tags||[],image:existing.image||'',updatedAt:existing.updatedAt||new Date().toISOString()}].slice(-8);Object.assign(existing,item,{updatedAt:changed?new Date().toISOString():(existing.updatedAt||'')});}
     else top.paragraphs.push({id:uid(),...item,updatedAt:new Date().toISOString(),history:[]});
   }
   if(!await saveData()){data=previousData;return;}
@@ -753,8 +796,7 @@ $('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventList
 $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#googleSignInButton').addEventListener('click',signInWithGoogle);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
-$('#copyQuizPrompt').addEventListener('click',copyQuizPrompt);$('#importQuiz').addEventListener('click',importQuiz);$('#closeQuizDialog').onclick=$('#cancelQuizDialog').onclick=()=>$('#quizDialog').close();$('#quizDialog').addEventListener('click',e=>{if(e.target===$('#quizDialog'))$('#quizDialog').close();});
-$('#addFlashcard').addEventListener('click',addFlashcard);$('#flipFlashcard').addEventListener('click',()=>{flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min((personalFlashcards[activeFlashcardId]||[]).length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
+$('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();

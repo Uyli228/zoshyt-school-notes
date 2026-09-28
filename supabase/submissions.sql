@@ -16,7 +16,11 @@ create table if not exists public.library_submissions (
 alter table public.library_submissions enable row level security;
 alter table public.library_submissions
   add column if not exists image_data text not null default ''
-  check (char_length(image_data) <= 500000 and (image_data = '' or image_data like 'data:image/jpeg;base64,%'));
+  check (char_length(image_data) <= 500000 and (image_data = '' or image_data like 'data:image/jpeg;base64,%')),
+  add column if not exists quiz_data jsonb
+  check (quiz_data is null or (jsonb_typeof(quiz_data) = 'object' and octet_length(quiz_data::text) <= 30000)),
+  add column if not exists flashcards_data jsonb
+  check (flashcards_data is null or (jsonb_typeof(flashcards_data) = 'object' and octet_length(flashcards_data::text) <= 30000));
 revoke all on table public.library_submissions from anon, authenticated;
 grant select, insert on table public.library_submissions to authenticated;
 
@@ -148,6 +152,12 @@ begin
       'updatedAt', reviewed_time,
       'history', '[]'::jsonb
     );
+    if submission.quiz_data is not null then
+      paragraph_data := jsonb_set(paragraph_data, '{quiz}', submission.quiz_data, true);
+    end if;
+    if submission.flashcards_data is not null then
+      paragraph_data := jsonb_set(paragraph_data, '{flashcards}', submission.flashcards_data, true);
+    end if;
 
     if topic_index is null then
       topic_index := jsonb_array_length(topics_data);
