@@ -57,13 +57,14 @@ try {
             Stop-Publish 'GitHub CLI не встановлено. Після встановлення відкрий цей файл ще раз.'
         }
         & winget install --id GitHub.cli --exact --accept-source-agreements --accept-package-agreements
-        if ($LASTEXITCODE -ne 0) { Stop-Publish 'Не вдалося встановити GitHub CLI.' }
+        $installExitCode = $LASTEXITCODE
         $candidates = @(
             (Join-Path $env:ProgramFiles 'GitHub CLI/gh.exe'),
             (Join-Path $env:LOCALAPPDATA 'Programs/GitHub CLI/gh.exe')
         )
         $ghPath = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         if (-not $ghPath) {
+            if ($installExitCode -ne 0) { Stop-Publish 'Не вдалося встановити GitHub CLI.' }
             Stop-Publish 'GitHub CLI встановлено. Закрий це вікно, відкрий файл ще раз і продовж публікацію.'
         }
     }
