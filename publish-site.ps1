@@ -116,7 +116,7 @@ try {
 
     $siteFiles = @(
         'index.html', 'app.js', 'styles.css', 'favicon.svg', 'README.md', '.nojekyll', '.gitignore',
-        'publish-site.ps1', 'Опублікувати_сайт.bat', 'supabase-config.js', 'supabase/schema.sql', 'supabase/submissions.sql', '.github/workflows/publish-pages.yml'
+        'publish-site.ps1', 'Опублікувати_сайт.bat', 'supabase-config.js', 'supabase/schema.sql', 'supabase/submissions.sql', 'supabase/study-tools.sql', '.github/workflows/publish-pages.yml'
     )
     $existingFiles = @($siteFiles | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) })
     Invoke-Git (@('add', '--') + $existingFiles)

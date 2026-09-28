@@ -1,5 +1,7 @@
 const STORAGE_KEY = 'tetrad-library-v1';
 const PREFS_KEY = 'zoshit-reader-preferences-v1';
+const QUIZZES_KEY = 'zoshit-personal-quizzes-v1';
+const FLASHCARDS_KEY = 'zoshit-personal-flashcards-v1';
 const colors = [
   { color: '#7969dd', tint: '#f0edff' }, { color: '#42a997', tint: '#e9f7f4' },
   { color: '#e8a04e', tint: '#fff4e7' }, { color: '#e17082', tint: '#fff0f2' },
@@ -39,11 +41,16 @@ let currentUser = null;
 let pendingSubmissionCount = 0;
 let activeScreen = 'library';
 let submissionQueryGeneration = 0;
-let classroomAccessToken = '';
-let classroomCourses = [];
-let classroomPreview = [];
 let bulkImportRows = [];
 let reportTarget = null;
+let personalQuizzes = loadPersonalStore(QUIZZES_KEY);
+let personalFlashcards = loadPersonalStore(FLASHCARDS_KEY);
+let activeQuiz = null;
+let quizIndex = 0;
+let quizAnswers = [];
+let activeFlashcardId = null;
+let flashcardIndex = 0;
+let flashcardShowingBack = false;
 let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
@@ -54,6 +61,16 @@ const view = $('#view');
 function loadData() {
   try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : structuredClone(starter); }
   catch { return structuredClone(starter); }
+}
+function loadPersonalStore(key) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || '{}');
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch { return {}; }
+}
+function savePersonalStore(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch { notify('Не вдалося зберегти особисті матеріали на цьому пристрої.'); return false; }
 }
 function loadReaderPrefs() {
   try {
@@ -110,7 +127,6 @@ function renderAccessState() {
   submitButton.textContent = isAdmin ? `Пропозиції${pendingSubmissionCount ? ` · ${pendingSubmissionCount}` : ''}` : 'Запропонувати конспект';
   submitButton.title = isAdmin ? 'Переглянути конспекти на перевірці' : 'Надіслати конспект на перевірку';
   submitButton.disabled = !cloudReady;
-  $('#classroomImportButton').hidden = !(cloudReady && isAdmin);
   $('#importButton').hidden = !canManage();
   $('#csvImportButton').hidden = !canManage();
   $('#reportsButton').hidden = !(cloudReady && isAdmin);
@@ -162,7 +178,6 @@ async function updateAdminRole(user, announce = false) {
     isAdmin = Boolean(role);
     if (announce && !isAdmin) notify('Вхід виконано. Тепер можна надсилати конспекти на перевірку.');
   }
-  if (!isAdmin) classroomAccessToken = '';
   await loadPendingSubmissionCount();
   renderAccessState();
   render();
@@ -402,7 +417,7 @@ function setBreadcrumbs(items) {
     render();
   }));
 }
-function render() { renderNav(); if (activeScreen === 'submissions') return renderSubmissionQueue(); if (activeScreen === 'reports') return renderReportQueue(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
+function render() { renderNav(); if (activeScreen === 'submissions') return renderSubmissionQueue(); if (activeScreen === 'reports') return renderReportQueue(); if (activeScreen === 'quiz') return renderQuizScreen(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
 function renderPersonalLists() {
   const list = (title, ids, icon) => {
     const entries = ids.map((id) => findParagraph(id)).filter(Boolean);
@@ -515,182 +530,6 @@ async function submitSuggestion(event) {
   delete imagePreview.dataset.newImage;
   notify('Конспект надіслано модератору на перевірку.');
 }
-function openClassroomImport() {
-  if (!isAdmin || !cloudReady) { notify('Імпорт з Classroom доступний лише адміністратору.'); return; }
-  classroomCourses = [];
-  classroomPreview = [];
-  $('#classroomCourseSection').hidden = true;
-  $('#classroomCourseList').innerHTML = '';
-  $('#classroomPreview').innerHTML = '';
-  $('#importClassroomSelection').disabled = true;
-  $('#classroomSetupHint').textContent = cloudConfig.classroomClientId
-    ? 'Під’єднай свій обліковий запис Google. Сайт запросить доступ лише для читання.'
-    : 'Спочатку додай Google OAuth Client ID у supabase-config.js та вкажи адресу сайту в Authorized JavaScript origins.';
-  $('#connectClassroom').disabled = !cloudConfig.classroomClientId;
-  $('#classroomDialog').showModal();
-}
-async function connectClassroom() {
-  if (!isAdmin || !cloudConfig.classroomClientId) return;
-  try {
-    await waitForGoogleIdentity();
-    const client = google.accounts.oauth2.initTokenClient({
-      client_id: cloudConfig.classroomClientId,
-      scope: [
-        'https://www.googleapis.com/auth/classroom.courses.readonly',
-        'https://www.googleapis.com/auth/classroom.topics.readonly',
-        'https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly'
-      ].join(' '),
-      callback: async (result) => {
-        if (result.error) { notify('Не вдалося під’єднати Google Classroom.'); return; }
-        classroomAccessToken = result.access_token;
-        $('#classroomSetupHint').textContent = 'Завантажую доступні класи…';
-        try {
-          classroomCourses = await fetchClassroomCollection('/courses', 'courses', { courseStates: 'ACTIVE' });
-          renderClassroomCourses();
-        } catch (error) {
-          console.error(error);
-          classroomAccessToken = '';
-          $('#classroomSetupHint').textContent = 'Не вдалося прочитати класи. Перевір доступ Google та налаштування Classroom API.';
-        }
-      }
-    });
-    client.requestAccessToken({ prompt: 'consent' });
-  } catch (error) {
-    console.error(error);
-    $('#classroomSetupHint').textContent = 'Не вдалося завантажити вікно Google. Онови сторінку й спробуй ще раз.';
-  }
-}
-function waitForGoogleIdentity() {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const check = () => {
-      if (window.google?.accounts?.oauth2) return resolve();
-      if (Date.now() - started > 10000) return reject(new Error('Google Identity Services unavailable'));
-      setTimeout(check, 100);
-    };
-    check();
-  });
-}
-async function fetchClassroomCollection(path, collectionName, params = {}) {
-  const items = [];
-  let pageToken = '';
-  do {
-    const url = new URL('https://classroom.googleapis.com/v1' + path);
-    url.searchParams.set('pageSize', '100');
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    if (pageToken) url.searchParams.set('pageToken', pageToken);
-    const response = await fetch(url, { headers: { Authorization: 'Bearer ' + classroomAccessToken } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error?.message || 'Classroom API ' + response.status);
-    items.push(...(payload[collectionName] || []));
-    pageToken = payload.nextPageToken || '';
-  } while (pageToken);
-  return items;
-}
-function renderClassroomCourses() {
-  const section = $('#classroomCourseSection');
-  section.hidden = false;
-  $('#classroomSetupHint').textContent = classroomCourses.length
-    ? 'Обери один або кілька активних класів. Перед записом покажу їхні теми й матеріали.'
-    : 'У цьому обліковому записі не знайдено активних класів.';
-  $('#classroomCourseCount').textContent = String(classroomCourses.length);
-  $('#classroomCourseList').innerHTML = classroomCourses.length
-    ? classroomCourses.map((course, index) => '<label class="classroom-course-option"><input type="checkbox" data-classroom-course="' + index + '"><span><strong>' + esc(course.name || 'Клас без назви') + '</strong><small>' + esc(course.section || course.room || 'Google Classroom') + '</small></span></label>').join('')
-    : '<p class="auth-copy">Переконайся, що це той самий Google-акаунт, яким ти користуєшся в Classroom.</p>';
-}
-function classroomCourseName(course) {
-  const name = String(course.name || 'Клас Google Classroom').trim();
-  const section = String(course.section || '').trim();
-  return section ? name + ' · ' + section : name;
-}
-async function previewClassroomCourses() {
-  if (!isAdmin || !classroomAccessToken) return;
-  const selected = [...document.querySelectorAll('[data-classroom-course]:checked')]
-    .map((checkbox) => classroomCourses[Number(checkbox.dataset.classroomCourse)])
-    .filter(Boolean);
-  if (!selected.length) { notify('Обери хоча б один клас.'); return; }
-  $('#classroomSetupHint').textContent = 'Завантажую теми й матеріали вибраних класів…';
-  $('#importClassroomSelection').disabled = true;
-  try {
-    classroomPreview = await Promise.all(selected.map(async (course) => {
-      const [topics, materials] = await Promise.all([
-        fetchClassroomCollection('/courses/' + encodeURIComponent(course.id) + '/topics', 'topic'),
-        fetchClassroomCollection('/courses/' + encodeURIComponent(course.id) + '/courseWorkMaterials', 'courseWorkMaterial')
-      ]);
-      const grouped = new Map(topics.map((item) => [item.topicId, { name: item.name, materials: [] }]));
-      for (const material of materials) {
-        const key = material.topicId || '__without_topic__';
-        if (!grouped.has(key)) grouped.set(key, { name: 'Матеріали без теми', materials: [] });
-        grouped.get(key).materials.push(material);
-      }
-      return { course, topics, materials, grouped: [...grouped.values()] };
-    }));
-    $('#classroomPreview').innerHTML = classroomPreview.map((entry) =>
-      '<article class="classroom-preview-card"><h3>' + esc(classroomCourseName(entry.course)) + '</h3><p>' + entry.topics.length + ' тем · ' + entry.materials.length + ' навчальних матеріалів</p><details><summary>Переглянути розподіл</summary>' +
-      (entry.grouped.length ? entry.grouped.map((group) => '<div class="classroom-preview-topic"><strong>' + esc(group.name) + '</strong>' +
-        (group.materials.length ? '<ul>' + group.materials.map((item) => '<li>' + esc(item.title) + '</li>').join('') + '</ul>' : '<small>Поки без матеріалів</small>') + '</div>').join('') : '<small>У класі поки немає тем і матеріалів.</small>') +
-      '</details></article>').join('');
-    $('#classroomSetupHint').textContent = 'Перевір розподіл і натисни «Додати до бібліотеки». Усі дії доступні лише для читання в Classroom.';
-    $('#importClassroomSelection').disabled = false;
-  } catch (error) {
-    console.error(error);
-    $('#classroomSetupHint').textContent = 'Не вдалося завантажити теми або матеріали. Перепід’єднай Google та спробуй ще раз.';
-    classroomPreview = [];
-  }
-}
-async function importClassroomPreview() {
-  if (!isAdmin || !cloudReady || !classroomPreview.length) return;
-  const previousData = structuredClone(data);
-  let addedSubjects = 0, addedTopics = 0, addedMaterials = 0;
-  for (const entry of classroomPreview) {
-    const courseName = classroomCourseName(entry.course);
-    let sub = data.find((item) => item.name.trim().toLocaleLowerCase('uk') === courseName.toLocaleLowerCase('uk'));
-    if (!sub) {
-      const color = colors[data.length % colors.length];
-      sub = { id: uid(), name: courseName, icon: '📚', color: color.color, tint: color.tint, topics: [] };
-      data.push(sub);
-      addedSubjects++;
-    }
-    for (const group of entry.grouped) {
-      let top = sub.topics.find((item) => item.name.trim().toLocaleLowerCase('uk') === group.name.trim().toLocaleLowerCase('uk'));
-      if (!top) {
-        top = { id: uid(), name: group.name, description: 'Імпортовано з Google Classroom · ' + courseName, paragraphs: [] };
-        sub.topics.push(top);
-        addedTopics++;
-      }
-      for (const material of group.materials) {
-        const sourceId = entry.course.id + ':' + material.id;
-        if (top.paragraphs.some((item) => item.classroomSourceId === sourceId)) continue;
-        const attachmentLinks = (material.materials || []).map((attachment) => {
-          if (attachment.link?.url) return attachment.link.url;
-          if (attachment.driveFile?.driveFile?.alternateLink) return attachment.driveFile.driveFile.alternateLink;
-          if (attachment.youtubeVideo?.alternateLink) return attachment.youtubeVideo.alternateLink;
-          if (attachment.form?.formUrl) return attachment.form.formUrl;
-          return '';
-        }).filter(Boolean);
-        const description = String(material.description || '').trim();
-        top.paragraphs.push({
-          id: uid(),
-          name: material.title || 'Матеріал Google Classroom',
-          summary: description.slice(0, 180),
-          content: [description, ...attachmentLinks.map((url) => 'Матеріал: ' + url)].filter(Boolean).join('\n\n') || 'Матеріал курсу «' + courseName + '».',
-          image: '',
-          classroomSourceId: sourceId,
-          classroomLink: material.alternateLink || ''
-        });
-        addedMaterials++;
-      }
-    }
-  }
-  if (!await saveData()) { data = previousData; return; }
-  classroomAccessToken = '';
-  classroomPreview = [];
-  $('#classroomDialog').close();
-  activeScreen = 'library';
-  current = { subjectId: null, topicId: null, paragraphId: null };
-  render();
-  notify('Імпортовано: ' + addedSubjects + ' предметів, ' + addedTopics + ' тем і ' + addedMaterials + ' матеріалів.');
-}
 function renderSubject(sub) {
   setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name }]); const c = counts(sub);
   view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div>':''}</div>
@@ -709,27 +548,161 @@ function renderTopic(sub, top) {
   $('#backToSubject').onclick=()=>{current.topicId=null;render();};$('#editTopic')?.addEventListener('click',()=>openEditor('topic',top.id));$('#addParagraph')?.addEventListener('click',()=>openEditor('paragraph'));$('#emptyAddParagraph')?.addEventListener('click',()=>openEditor('paragraph'));
   view.querySelectorAll('[data-open-paragraph]').forEach(el=>el.addEventListener('click',()=>{const p=top.paragraphs.find(item=>item.id===el.dataset.openParagraph);if(p)openParagraph(sub,top,p);}));
 }
-function renderParagraph(sub,top,p) {
-  setBreadcrumbs([{label:'Спільна бібліотека',action:'home'},{label:sub.name,action:'subject'},{label:top.name,action:'topic'}]);
+function renderParagraph(sub, top, p) {
+  setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name, action: 'subject' }, { label: top.name, action: 'topic' }]);
   const tags = Array.isArray(p.tags) ? p.tags : [];
   const history = Array.isArray(p.history) ? p.history : [];
-  view.innerHTML=`<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button><div class="article-actions"><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id)?'★ В обраному':'☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id]?'✓ Прочитано':'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button>${canManage()?'<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>':''}</div><article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary?`<p class="article-summary">${esc(p.summary)}</p>`:''}${tags.length?`<div class="tag-list">${tags.map((tag)=>`<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>`:''}${p.image?`<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">`:''}<div class="article-body">${esc(p.content||'Додай сюди свої нотатки.')}</div>${p.updatedAt?`<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>`:''}${history.length?`<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version)=>`<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary?`<p>${esc(version.summary)}</p>`:''}<div>${esc(version.content||'')}</div></article>`).join('')}</details>`:''}</article><section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id]||'')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>`;
-  const sourceLink = safeHttpUrl(p.classroomLink);
-  if (sourceLink) {
-    const link = document.createElement('a');
-    link.className = 'classroom-material-link';
-    link.href = sourceLink;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Відкрити матеріал у Google Classroom ↗';
-    view.querySelector('.article-card h2').after(link);
+  const quizzes = Array.isArray(personalQuizzes[p.id]) ? personalQuizzes[p.id] : [];
+  view.innerHTML = `<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button>
+    <div class="article-actions"><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button><button class="button button-quiet" id="openQuizDialog">Створити квіз</button><button class="button button-quiet" id="openFlashcards">Флеш-картки${(personalFlashcards[p.id] || []).length ? ` · ${(personalFlashcards[p.id] || []).length}` : ''}</button>${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
+    <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body">${esc(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
+    ${quizzes.length ? `<section class="personal-note"><div class="section-title"><h2>Мої квізи</h2><span>Зберігаються в цьому браузері</span></div><div class="personal-list">${quizzes.map((quiz, index) => `<button class="personal-item" data-start-quiz="${index}"><span><strong>${esc(quiz.title)}</strong><small>${quiz.questions.length} запитань</small></span><span class="personal-status">Почати →</span></button>`).join('')}</div></section>` : ''}
+    <section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id] || '')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>
+    <section class="comments-panel"><div class="section-title"><h2>Коментарі</h2><span id="commentCount">Завантаження…</span></div><p class="auth-copy">Коментувати можуть лише користувачі, які увійшли. Ліміт: 4 коментарі за 10 хвилин і 15 за добу.</p>${currentUser ? `<form id="commentForm" class="comment-form"><textarea name="body" maxlength="1200" minlength="2" required placeholder="Запитай або доповни матеріал…"></textarea><button class="button button-primary" type="submit">Надіслати коментар</button></form>` : `<button class="button button-quiet" id="commentSignIn">Увійди, щоб коментувати</button>`}<div id="commentList" class="comment-list"><p class="auth-copy">Завантажую коментарі…</p></div></section>`;
+  $('#backToTopic').onclick = () => { current.paragraphId = null; render(); };
+  $('#favoriteParagraph').onclick = () => { readerPrefs.favorites = readerPrefs.favorites.includes(p.id) ? readerPrefs.favorites.filter((id) => id !== p.id) : [p.id, ...readerPrefs.favorites]; saveReaderPrefs(); render(); };
+  $('#markParagraphRead').onclick = () => { readerPrefs.read[p.id] = !readerPrefs.read[p.id]; saveReaderPrefs(); render(); };
+  $('#savePersonalNote').onclick = () => { const value = $('#personalNoteInput').value.trim(); if (value) readerPrefs.notes[p.id] = value; else delete readerPrefs.notes[p.id]; saveReaderPrefs(); notify('Особисту нотатку збережено на цьому пристрої.'); };
+  $('#printParagraph').onclick = () => window.print();
+  $('#reportParagraph').onclick = () => openReportDialog(sub, top, p);
+  $('#editParagraph')?.addEventListener('click', () => openEditor('paragraph', p.id));
+  $('#deleteParagraph')?.addEventListener('click', () => removeItem('paragraph', p.id));
+  $('#openQuizDialog').onclick = () => openQuizDialog(sub, top, p);
+  $('#openFlashcards').onclick = () => openFlashcardDialog(p.id);
+  $('#commentSignIn')?.addEventListener('click', () => $('#authDialog').showModal());
+  $('#commentForm')?.addEventListener('submit', (event) => submitComment(event, p.id));
+  view.querySelectorAll('[data-start-quiz]').forEach((button) => button.addEventListener('click', () => beginQuiz(quizzes[Number(button.dataset.startQuiz)])));
+  loadComments(p.id);
+}
+function openQuizDialog(sub, top, p) {
+  const lesson = [p.name, p.summary, p.content].filter(Boolean).join('\n\n');
+  $('#quizPrompt').value = `Створи навчальний квіз українською мовою за матеріалом нижче. Перевір розуміння, а не лише запам'ятовування. Не додавай фактів, яких немає в матеріалі. Зроби 5 запитань із 4 варіантами відповіді, лише один правильний. Поверни тільки коректний JSON без Markdown і пояснень за схемою: {"title":"Коротка назва квізу","questions":[{"question":"Текст запитання","options":["Варіант 1","Варіант 2","Варіант 3","Варіант 4"],"answer":0,"explanation":"Коротке пояснення правильної відповіді"}]}. Поле answer — індекс правильної відповіді, рахуючи від 0. До 30 запитань.\n\nПредмет: ${sub.name}\nТема: ${top.name}\nПараграф: ${p.name}\n\nМатеріал:\n${lesson}`;
+  $('#quizJson').value = '';
+  $('#quizImportHint').textContent = '';
+  $('#quizDialog').showModal();
+}
+async function copyQuizPrompt() {
+  try { await navigator.clipboard.writeText($('#quizPrompt').value); }
+  catch { $('#quizPrompt').focus(); $('#quizPrompt').select(); document.execCommand('copy'); }
+  notify('Промпт скопійовано. Встав його в обрану нейромережу.');
+}
+function parseQuiz(raw) {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const parsed = JSON.parse(fenced ? fenced[1] : raw);
+  const quiz = parsed?.quiz || parsed;
+  if (!quiz || typeof quiz.title !== 'string' || !Array.isArray(quiz.questions) || quiz.questions.length < 1 || quiz.questions.length > 30) throw new Error('Формат квізу не відповідає прикладу.');
+  const questions = quiz.questions.map((question) => {
+    if (typeof question.question !== 'string' || question.question.trim().length < 3 || !Array.isArray(question.options) || question.options.length < 2 || question.options.length > 6 || !Number.isInteger(question.answer) || question.answer < 0 || question.answer >= question.options.length || question.options.some((option) => typeof option !== 'string' || !option.trim())) throw new Error('Перевір поля запитань, options та answer.');
+    return { question: question.question.trim().slice(0, 500), options: question.options.map((option) => option.trim().slice(0, 300)), answer: question.answer, explanation: String(question.explanation || '').trim().slice(0, 1000) };
+  });
+  return { id: uid(), title: quiz.title.trim().slice(0, 100) || 'Квіз', questions };
+}
+function importQuiz() {
+  try {
+    if (!current.paragraphId) throw new Error('Спочатку відкрий параграф.');
+    const quiz = parseQuiz($('#quizJson').value.trim());
+    const next = [...(personalQuizzes[current.paragraphId] || []), quiz].slice(-10);
+    personalQuizzes[current.paragraphId] = next;
+    if (!savePersonalStore(QUIZZES_KEY, personalQuizzes)) return;
+    $('#quizDialog').close();
+    beginQuiz(quiz);
+  } catch (error) {
+    $('#quizImportHint').textContent = error instanceof SyntaxError ? 'Не вдалося прочитати JSON. Скопіюй увесь результат нейромережі ще раз.' : error.message;
   }
-  $('#backToTopic').onclick=()=>{current.paragraphId=null;render();};
-  $('#favoriteParagraph').onclick=()=>{readerPrefs.favorites=readerPrefs.favorites.includes(p.id)?readerPrefs.favorites.filter((id)=>id!==p.id):[p.id,...readerPrefs.favorites];saveReaderPrefs();render();};
-  $('#markParagraphRead').onclick=()=>{readerPrefs.read[p.id]=!readerPrefs.read[p.id];saveReaderPrefs();render();};
-  $('#savePersonalNote').onclick=()=>{const value=$('#personalNoteInput').value.trim();if(value)readerPrefs.notes[p.id]=value;else delete readerPrefs.notes[p.id];saveReaderPrefs();notify('Особисту нотатку збережено на цьому пристрої.');};
-  $('#printParagraph').onclick=()=>window.print();$('#reportParagraph').onclick=()=>openReportDialog(sub,top,p);
-  $('#editParagraph')?.addEventListener('click',()=>openEditor('paragraph',p.id));$('#deleteParagraph')?.addEventListener('click',()=>removeItem('paragraph',p.id));
+}
+function beginQuiz(quiz) {
+  if (!quiz?.questions?.length) return;
+  activeQuiz = quiz;
+  quizIndex = 0;
+  quizAnswers = Array(quiz.questions.length).fill(null);
+  activeScreen = 'quiz';
+  render();
+}
+function renderQuizScreen() {
+  if (!activeQuiz) { activeScreen = 'library'; render(); return; }
+  const total = activeQuiz.questions.length;
+  const correct = quizAnswers.reduce((count, answer, index) => count + (answer === activeQuiz.questions[index].answer ? 1 : 0), 0);
+  setBreadcrumbs([{ label: 'Квіз' }]);
+  if (quizIndex >= total) {
+    view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;До параграфа</button><span class="eyebrow">КВІЗ ЗАВЕРШЕНО</span><h1>${esc(activeQuiz.title)}</h1><p class="quiz-score">${correct} із ${total} правильних відповідей</p><div class="quiz-actions"><button class="button button-primary" id="retryQuiz">Спробувати ще раз</button><button class="button button-quiet" id="leaveQuizBottom">До параграфа</button></div></div>`;
+    $('#retryQuiz').onclick = () => beginQuiz(activeQuiz);
+    $('#leaveQuiz').onclick = $('#leaveQuizBottom').onclick = leaveQuiz;
+    return;
+  }
+  const question = activeQuiz.questions[quizIndex];
+  const selected = quizAnswers[quizIndex];
+  view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;До параграфа</button><div class="quiz-progress">Запитання ${quizIndex + 1} із ${total}</div><h1>${esc(activeQuiz.title)}</h1><h2>${esc(question.question)}</h2><div class="quiz-options">${question.options.map((option, index) => `<button class="quiz-option ${selected !== null ? (index === question.answer ? 'correct' : index === selected ? 'incorrect' : '') : ''}" data-quiz-answer="${index}" ${selected !== null ? 'disabled' : ''}>${esc(option)}</button>`).join('')}</div>${selected !== null ? `<p class="quiz-feedback ${selected === question.answer ? 'correct-text' : 'incorrect-text'}">${selected === question.answer ? 'Правильно!' : 'Поки що ні.'} ${esc(question.explanation)}</p><button class="button button-primary" id="nextQuizQuestion">${quizIndex + 1 === total ? 'Показати результат' : 'Наступне запитання →'}</button>` : ''}</div>`;
+  $('#leaveQuiz').onclick = leaveQuiz;
+  view.querySelectorAll('[data-quiz-answer]').forEach((button) => button.addEventListener('click', () => { quizAnswers[quizIndex] = Number(button.dataset.quizAnswer); renderQuizScreen(); }));
+  $('#nextQuizQuestion')?.addEventListener('click', () => { quizIndex++; renderQuizScreen(); });
+}
+function leaveQuiz() { activeScreen = 'library'; render(); }
+function openFlashcardDialog(paragraphId) {
+  activeFlashcardId = paragraphId;
+  flashcardIndex = 0;
+  flashcardShowingBack = false;
+  $('#flashcardFront').value = '';
+  $('#flashcardBack').value = '';
+  updateFlashcardView();
+  $('#flashcardDialog').showModal();
+}
+function updateFlashcardView() {
+  const cards = personalFlashcards[activeFlashcardId] || [];
+  const card = cards[flashcardIndex];
+  $('#flashcardCount').textContent = card ? `Картка ${flashcardIndex + 1} із ${cards.length}` : 'У цьому наборі ще немає карток.';
+  $('#flashcardFaceLabel').textContent = card ? (flashcardShowingBack ? 'Відповідь' : 'Запитання') : 'Додай картку, щоб почати';
+  $('#flashcardFaceText').textContent = card ? (flashcardShowingBack ? card.back : card.front) : '☆';
+  $('#flipFlashcard').disabled = !card;
+  $('#previousFlashcard').disabled = !card || flashcardIndex === 0;
+  $('#nextFlashcard').disabled = !card || flashcardIndex >= cards.length - 1;
+}
+function addFlashcard() {
+  const front = $('#flashcardFront').value.trim();
+  const back = $('#flashcardBack').value.trim();
+  if (front.length < 2 || back.length < 1) { notify('Заповни запитання й відповідь.'); return; }
+  const cards = [...(personalFlashcards[activeFlashcardId] || []), { id: uid(), front, back }];
+  personalFlashcards[activeFlashcardId] = cards;
+  if (!savePersonalStore(FLASHCARDS_KEY, personalFlashcards)) return;
+  flashcardIndex = cards.length - 1;
+  flashcardShowingBack = false;
+  $('#flashcardFront').value = '';
+  $('#flashcardBack').value = '';
+  updateFlashcardView();
+  notify('Флеш-картку збережено в цьому браузері.');
+}
+async function loadComments(paragraphId) {
+  const count = $('#commentCount');
+  const list = $('#commentList');
+  if (!count || !list) return;
+  if (!cloudReady || !cloudClient) { count.textContent = 'Недоступні'; list.innerHTML = '<p class="auth-copy">Для коментарів потрібно налаштувати таблицю у Supabase.</p>'; return; }
+  const { data: comments, error } = await cloudClient.from('library_comments').select('id,author_id,author_name,body,created_at').eq('paragraph_id', paragraphId).order('created_at', { ascending: false }).limit(50);
+  if (current.paragraphId !== paragraphId || !$('#commentList')) return;
+  if (error) { console.error(error); count.textContent = 'Поки що недоступні'; list.innerHTML = '<p class="auth-copy">Власнику сайту потрібно виконати файл supabase/study-tools.sql у Supabase.</p>'; return; }
+  count.textContent = `${comments.length} ${plural(comments.length, 'коментар', 'коментарі', 'коментарів')}`;
+  list.innerHTML = comments.length ? comments.map((comment) => `<article class="comment-card"><div class="comment-meta"><strong>${esc(comment.author_name)}</strong><time>${new Date(comment.created_at).toLocaleString('uk-UA')}</time>${currentUser && (isAdmin || currentUser.id === comment.author_id) ? `<button class="text-button danger-action" data-delete-comment="${esc(comment.id)}">Видалити</button>` : ''}</div><p>${esc(comment.body)}</p></article>`).join('') : '<p class="auth-copy">Коментарів поки немає. Будь першим, хто поставить запитання чи поділиться думкою.</p>';
+  list.querySelectorAll('[data-delete-comment]').forEach((button) => button.addEventListener('click', () => deleteComment(button.dataset.deleteComment, paragraphId)));
+}
+async function submitComment(event, paragraphId) {
+  event.preventDefault();
+  if (!currentUser) { notify('Увійди в обліковий запис, щоб залишити коментар.'); return; }
+  const form = event.currentTarget;
+  const body = String(new FormData(form).get('body') || '').trim();
+  const { error } = await cloudClient.from('library_comments').insert({ paragraph_id: paragraphId, body });
+  if (error) {
+    console.error(error);
+    notify(error.code === 'P0001' ? 'Досягнуто ліміт коментарів або такий коментар уже є.' : 'Не вдалося надіслати коментар. Перевір з’єднання.');
+    return;
+  }
+  form.reset();
+  notify('Коментар додано.');
+  await loadComments(paragraphId);
+}
+async function deleteComment(id, paragraphId) {
+  if (!confirm('Видалити цей коментар?')) return;
+  const { error } = await cloudClient.from('library_comments').delete().eq('id', id);
+  if (error) { console.error(error); notify('Не вдалося видалити коментар.'); return; }
+  notify('Коментар видалено.');
+  await loadComments(paragraphId);
 }
 function renderSearch(query) {
   const q=query.trim().toLocaleLowerCase('uk'); if(!q){render();return;}
@@ -779,8 +752,9 @@ async function importBackup(file){if(!canManage())return;const previousData=stru
 $('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
 $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#googleSignInButton').addEventListener('click',signInWithGoogle);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
-$('#classroomImportButton').addEventListener('click',openClassroomImport);$('#connectClassroom').addEventListener('click',connectClassroom);$('#previewClassroomSelection').addEventListener('click',previewClassroomCourses);$('#importClassroomSelection').addEventListener('click',importClassroomPreview);$('#closeClassroomDialog').onclick=()=>$('#classroomDialog').close();$('#cancelClassroomDialog').onclick=()=>$('#classroomDialog').close();$('#classroomDialog').addEventListener('click',e=>{if(e.target===$('#classroomDialog'))$('#classroomDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
+$('#copyQuizPrompt').addEventListener('click',copyQuizPrompt);$('#importQuiz').addEventListener('click',importQuiz);$('#closeQuizDialog').onclick=$('#cancelQuizDialog').onclick=()=>$('#quizDialog').close();$('#quizDialog').addEventListener('click',e=>{if(e.target===$('#quizDialog'))$('#quizDialog').close();});
+$('#addFlashcard').addEventListener('click',addFlashcard);$('#flipFlashcard').addEventListener('click',()=>{flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min((personalFlashcards[activeFlashcardId]||[]).length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();

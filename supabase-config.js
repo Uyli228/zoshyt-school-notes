@@ -3,5 +3,4 @@
 window.ZOSHIT_SUPABASE_CONFIG = {
   url: 'https://wfsorskdkuchboeerlsu.supabase.co',
   anonKey: 'sb_publishable_0dBZNVFpRoXqoMolycJzkQ_B0r5kEuX',
-  classroomClientId: ''
 };
