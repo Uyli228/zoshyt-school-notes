@@ -779,7 +779,8 @@ async function submitSuggestion(event) {
   event.preventDefault();
   if (!notePromptUsed.submission) { notify('Спочатку натисни велику кнопку «ПРОМПТ ДЛЯ ШІ», скопіюй шаблон і створи за ним конспект.'); $('#submissionNotePrompt')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   if (!currentUser || !cloudReady) { notify('Увійди, щоб надіслати конспект.'); return; }
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   let studyTools;
   try { studyTools = collectAdditionalStudyTools('submission'); }
   catch (error) { notify(error.message); return; }
@@ -795,16 +796,23 @@ async function submitSuggestion(event) {
   if (studyTools.quiz) suggestion.quiz_data = studyTools.quiz;
   if (studyTools.flashcards) suggestion.flashcards_data = studyTools.flashcards;
   if (suggestion.content.length < 20) { notify('Додай трохи більше змісту — від 20 символів.'); return; }
+  const submitButton = formElement.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = 'Надсилаю…';
   const { error } = await cloudClient.from('library_submissions').insert(suggestion);
   if (error) {
+    submitButton.disabled = false;
+    submitButton.textContent = 'Надіслати на перевірку';
     console.error(error);
     if (error.code === 'P0001') notify('Забагато пропозицій за короткий час. Спробуй пізніше.');
     else if (/quiz_data|flashcards_data/i.test(error.message || '')) notify('Щоб надіслати квіз або картки, адміністратор має оновити базу файлом supabase/submissions.sql.');
     else notify('Не вдалося надіслати конспект. Перевір поля й спробуй ще раз.');
     return;
   }
+  submitButton.disabled = false;
+  submitButton.textContent = 'Надіслати на перевірку';
   $('#submissionDialog').close();
-  event.currentTarget.reset();
+  formElement.reset();
   const imagePreview = $('#submissionImagePreview');
   imagePreview.src = '';
   imagePreview.style.display = 'none';
