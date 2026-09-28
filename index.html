@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7fb">
+  <meta name="description" content="Особиста бібліотека навчальних матеріалів: предмети, теми й параграфи в одному місці.">
+  <title>Зошит — бібліотека знань</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Навігація за предметами">
+      <a class="brand" href="#" id="homeLink" aria-label="На головну">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 7.5A3.5 3.5 0 0 1 11.5 4H25v21H11.5A3.5 3.5 0 0 0 8 28V7.5Z" fill="currentColor" opacity=".2"/><path d="M8 7.5A3.5 3.5 0 0 1 11.5 4H25v21H11.5A3.5 3.5 0 0 0 8 28V7.5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 8h13M8 25c0-1.9 1.6-3.5 3.5-3.5H25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+        <span><strong>Зошит</strong><small>твоя бібліотека знань</small></span>
+      </a>
+      <div class="side-heading"><span>МОЇ ПРЕДМЕТИ</span><button class="icon-button" id="addSubject" aria-label="Додати предмет" title="Додати предмет">＋</button></div>
+      <nav id="subjectNav" class="subject-nav"></nav>
+      <div class="sidebar-bottom"><div class="storage-note"><span class="storage-dot"></span><span>Дані зберігаються<br>у цьому браузері</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton">↙ &nbsp;Імпорт копії</button></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Моя бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему або параграф…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><button class="avatar" aria-label="Особиста бібліотека">Я</button></header>
+      <section id="view" class="view" aria-live="polite"></section>
+    </main>
+  </div>
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
+  <dialog id="editorDialog" class="editor-dialog"><form id="editorForm" method="dialog"><div class="dialog-head"><div><span class="eyebrow" id="dialogEyebrow">НОВИЙ ЗАПИС</span><h2 id="dialogTitle">Додати предмет</h2></div><button type="button" class="icon-button close-button" id="closeDialog" aria-label="Закрити">×</button></div><div id="formFields" class="form-fields"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="cancelDialog">Скасувати</button><button type="submit" class="button button-primary">Зберегти</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
