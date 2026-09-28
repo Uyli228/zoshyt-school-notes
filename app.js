@@ -227,10 +227,34 @@ async function requestAdminLink(event) {
   if (!cloudReady) { notify('Спочатку потрібно під’єднати проєкт Supabase.'); return; }
   const email = String(new FormData(event.currentTarget).get('email') || '').trim();
   const { error } = await cloudClient.auth.signInWithOtp({ email, options: { emailRedirectTo: `${location.origin}${location.pathname}` } });
-  if (error) { notify('Не вдалося надіслати посилання. Перевір адресу пошти.'); console.error(error); return; }
+  if (error) {
+    console.error('Помилка входу Supabase:', error);
+    const code = String(error.code || '');
+    if (code === 'email_address_not_authorized') {
+      notify('Supabase поки не дозволяє надсилати листи на цю адресу. Власнику сайту потрібно налаштувати SMTP у Supabase.');
+    } else if (code === 'over_email_send_rate_limit' || error.status === 429) {
+      notify('Supabase тимчасово обмежив надсилання листів. Спробуй пізніше.');
+    } else if (code === 'redirect_to_not_allowed') {
+      notify('Адреса сайту не додана до дозволених адрес входу в Supabase.');
+    } else {
+      notify('Supabase не зміг надіслати лист. Власнику сайту потрібно перевірити налаштування пошти; точну помилку записано в консолі браузера.');
+    }
+    return;
+  }
   $('#authDialog').close();
   event.currentTarget.reset();
   notify('Посилання для входу надіслано на пошту. Після входу можна буде надіслати конспект.');
+}
+async function signInWithGoogle() {
+  if (!cloudReady) { notify('Спільна бібліотека зараз недоступна. Спробуй пізніше.'); return; }
+  const { error } = await cloudClient.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: `${location.origin}${location.pathname}` }
+  });
+  if (error) {
+    console.error('Помилка входу Google:', error);
+    notify('Не вдалося увійти через Google. Перевір налаштування Google у Supabase.');
+  }
 }
 async function handleAccountButton() {
   if (currentUser) {
@@ -753,7 +777,7 @@ async function removeItem(kind,id){if(!canManage())return;const words={subject:'
 function backup(){const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),subjects:data},null,2)],{type:'application/json'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='tetrad-backup.json';link.click();URL.revokeObjectURL(link.href);}
 async function importBackup(file){if(!canManage())return;const previousData=structuredClone(data);try{const parsed=JSON.parse(await file.text());const candidate=Array.isArray(parsed)?parsed:parsed.subjects;if(!Array.isArray(candidate)||candidate.some(s=>typeof s.name!=='string'||!Array.isArray(s.topics)))throw new Error();if(!confirm(`Замінити поточну бібліотеку? Буде імпортовано предметів: ${candidate.length}.`))return;data=candidate;current={subjectId:null,topicId:null,paragraphId:null};if(!await saveData())data=previousData;else notify('Спільну бібліотеку оновлено');render();}catch{data=previousData;notify('Цей файл не схожий на копію бібліотеки.');}}
 $('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
-$('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
+$('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#googleSignInButton').addEventListener('click',signInWithGoogle);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
 $('#classroomImportButton').addEventListener('click',openClassroomImport);$('#connectClassroom').addEventListener('click',connectClassroom);$('#previewClassroomSelection').addEventListener('click',previewClassroomCourses);$('#importClassroomSelection').addEventListener('click',importClassroomPreview);$('#closeClassroomDialog').onclick=()=>$('#classroomDialog').close();$('#cancelClassroomDialog').onclick=()=>$('#classroomDialog').close();$('#classroomDialog').addEventListener('click',e=>{if(e.target===$('#classroomDialog'))$('#classroomDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
