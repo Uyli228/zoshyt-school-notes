@@ -208,7 +208,7 @@ function bindNotePrompt(prefix) {
   const isSubmission = prefix === 'submission';
   notePromptUsed[prefix] = false;
   const submitButton = isSubmission ? $('#submissionForm button[type="submit"]') : $('#editorForm button[type="submit"]');
-  submitButton.disabled = isSubmission || !editContext?.id;
+  submitButton.disabled = !isSubmission && !editContext?.id;
   const sourceFields = isSubmission ? ['Subject', 'Topic', 'Title', 'Summary', 'Content'] : ['Name', 'Summary', 'Content'];
   const refresh = () => { $(`#${prefix}NotePrompt`).value = buildNotePrompt(prefix); };
   sourceFields.forEach((name) => $(`#${prefix}${name}`)?.addEventListener('input', refresh));
