@@ -14,6 +14,9 @@ create table if not exists public.library_submissions (
 );
 
 alter table public.library_submissions enable row level security;
+alter table public.library_submissions
+  add column if not exists image_data text not null default ''
+  check (char_length(image_data) <= 500000 and (image_data = '' or image_data like 'data:image/jpeg;base64,%'));
 revoke all on table public.library_submissions from anon, authenticated;
 grant select, insert on table public.library_submissions to authenticated;
 
@@ -140,7 +143,10 @@ begin
       'name', btrim(submission.title),
       'summary', btrim(submission.summary),
       'content', btrim(submission.content),
-      'image', ''
+      'image', coalesce(nullif(submission.image_data, ''), ''),
+      'tags', '[]'::jsonb,
+      'updatedAt', reviewed_time,
+      'history', '[]'::jsonb
     );
 
     if topic_index is null then
@@ -188,3 +194,69 @@ begin
 exception when duplicate_object then null;
 end;
 $$;
+
+-- Учні можуть повідомляти про помилки; переглядати й закривати звіти можуть лише адміністратори.
+create table if not exists public.library_reports (
+  id uuid primary key default gen_random_uuid(),
+  author_id uuid not null references auth.users (id) on delete cascade,
+  subject_name text not null check (char_length(btrim(subject_name)) between 1 and 60),
+  topic_name text not null check (char_length(btrim(topic_name)) between 1 and 90),
+  paragraph_id text not null,
+  paragraph_title text not null check (char_length(btrim(paragraph_title)) between 1 and 110),
+  message text not null check (char_length(btrim(message)) between 5 and 1500),
+  status text not null default 'pending' check (status in ('pending', 'resolved')),
+  created_at timestamptz not null default now(),
+  reviewer_id uuid references auth.users (id) on delete set null,
+  reviewed_at timestamptz
+);
+
+alter table public.library_reports enable row level security;
+revoke all on table public.library_reports from anon, authenticated;
+grant select, insert, update on table public.library_reports to authenticated;
+
+drop policy if exists "Admins can read library reports" on public.library_reports;
+create policy "Admins can read library reports"
+  on public.library_reports for select to authenticated
+  using ((select public.is_library_admin()));
+
+drop policy if exists "Signed-in users can report library errors" on public.library_reports;
+create policy "Signed-in users can report library errors"
+  on public.library_reports for insert to authenticated
+  with check (author_id = (select auth.uid()) and status = 'pending' and reviewer_id is null and reviewed_at is null);
+
+drop policy if exists "Admins can resolve library reports" on public.library_reports;
+create policy "Admins can resolve library reports"
+  on public.library_reports for update to authenticated
+  using ((select public.is_library_admin()))
+  with check ((select public.is_library_admin()));
+
+create or replace function public.enforce_library_report_rate()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recent_count integer;
+begin
+  new.author_id := (select auth.uid());
+  new.status := 'pending';
+  new.reviewer_id := null;
+  new.reviewed_at := null;
+  new.created_at := now();
+  perform pg_advisory_xact_lock(hashtextextended(new.author_id::text, 0));
+  select count(*) into recent_count
+  from public.library_reports
+  where author_id = new.author_id and created_at > now() - interval '1 hour';
+  if recent_count >= 10 then
+    raise exception 'Too many reports. Try again later.' using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.enforce_library_report_rate() from public, anon, authenticated;
+drop trigger if exists enforce_library_report_rate on public.library_reports;
+create trigger enforce_library_report_rate
+  before insert on public.library_reports
+  for each row execute function public.enforce_library_report_rate();
