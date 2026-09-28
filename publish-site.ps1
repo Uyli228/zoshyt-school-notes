@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $ghPath = $null
 
@@ -81,8 +81,11 @@ try {
     $owner = (Invoke-Gh @('api', 'user', '--jq', '.login')).Trim()
     if (-not $owner) { Stop-Publish 'Не вдалося визначити GitHub-акаунт.' }
 
-    $origin = (& git remote get-url origin 2>$null)
-    $hasOrigin = $LASTEXITCODE -eq 0 -and $origin
+    $remotes = @(& git remote)
+    if ($LASTEXITCODE -ne 0) { Stop-Publish 'Не вдалося перевірити Git remote.' }
+    $hasOrigin = $remotes -contains 'origin'
+    $origin = $null
+    if ($hasOrigin) { $origin = (& git remote get-url origin).Trim() }
     if ($hasOrigin) {
         if ($origin -notmatch 'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$') {
             Stop-Publish 'Для origin уже налаштовано інший сервер. Перевір Git remote перед публікацією.'
@@ -97,10 +100,7 @@ try {
             Stop-Publish 'Назва може містити лише латинські літери, цифри, крапки, дефіси й підкреслення.'
         }
         $repo = "$owner/$repoName"
-        $existing = Invoke-Gh @('repo', 'view', $repo, '--json', 'name', '--jq', '.name') -AllowFailure
-        if ($existing) {
-            Stop-Publish "Репозиторій $repo вже існує. Введи іншу назву або налаштуй його вручну."
-        }
+        # Перевірку наявності виконує команда create, щоб коректно обробити відсутній репозиторій у Windows PowerShell.
         Write-Host ''
         Write-Host "Буде створено відкритий репозиторій https://github.com/$repo" -ForegroundColor Yellow
         Write-Host 'Код сайту буде доступний усім. Особисті матеріали, які ти додаєш у браузері, до GitHub не надсилаються.'
