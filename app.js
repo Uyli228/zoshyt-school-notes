@@ -26,6 +26,15 @@ const starter = [
   ]}
 ];
 let data = loadData();
+const cloudConfig = window.ZOSHIT_SUPABASE_CONFIG || {};
+const cloudConfigured = Boolean(cloudConfig.url && cloudConfig.anonKey && window.supabase?.createClient);
+let cloudClient = null;
+let cloudReady = false;
+let isAdmin = false;
+let sharedRevision = 0;
+let realtimeChannel = null;
+let currentUser = null;
+let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
 let toastTimer;
@@ -36,15 +45,144 @@ function loadData() {
   try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : structuredClone(starter); }
   catch { return structuredClone(starter); }
 }
-function saveData() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); return true; } catch { notify('Не вдалося зберегти дані. Спробуй зменшити зображення.'); return false; } }
+async function saveData() {
+  if (!cloudConfigured) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); return true; }
+    catch { notify('Не вдалося зберегти дані. Спробуй зменшити зображення.'); return false; }
+  }
+  if (!cloudReady || !isAdmin) { notify('Змінювати спільну бібліотеку може лише адміністратор.'); return false; }
+  const nextRevision = sharedRevision + 1;
+  const { data: saved, error } = await cloudClient.from('library_documents')
+    .update({ data, revision: nextRevision, updated_at: new Date().toISOString() })
+    .eq('id', 1).eq('revision', sharedRevision).select('revision').maybeSingle();
+  if (error) { notify('Не вдалося зберегти спільну бібліотеку. Перевір з’єднання.'); console.error(error); return false; }
+  if (!saved) { notify('Бібліотеку вже змінив інший адміністратор. Онови сторінку й повтори дію.'); await loadSharedLibrary(); return false; }
+  sharedRevision = Number(saved.revision);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* Хмарна копія вже збережена. */ }
+  return true;
+}
+function canManage() { return !cloudConfigured || (cloudReady && isAdmin); }
 function uid() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function subject(id) { return data.find((item) => item.id === id); }
 function topic(sub, id) { return sub?.topics.find((item) => item.id === id); }
 function paragraph(top, id) { return top?.paragraphs.find((item) => item.id === id); }
 function esc(value = '') { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]); }
 function notify(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2600); }
+function renderAccessState() {
+  const account = $('#accountButton');
+  account.textContent = isAdmin ? 'Адміністратор · вийти' : currentUser ? 'Вийти' : 'Вхід адміністратора';
+  account.title = isAdmin ? 'Вийти з режиму адміністратора' : currentUser ? 'Вийти з облікового запису' : 'Увійти, щоб керувати спільною бібліотекою';
+  $('#importButton').hidden = !canManage();
+  const note = $('#storageNote');
+  note.innerHTML = cloudConfigured
+    ? '<span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span>'
+    : '<span class="storage-dot storage-dot-local"></span><span>Локальний режим<br>без синхронізації</span>';
+  renderSystemBanner();
+}
+function renderSystemBanner() {
+  const banner = $('#systemBanner');
+  if (!cloudConfigured) {
+    banner.className = 'system-banner system-banner-warn';
+    banner.textContent = 'Зараз це локальна копія: зміни видно лише в цьому браузері. Підключи Supabase, щоб увімкнути спільну бібліотеку й доступ адміністратора.';
+    banner.hidden = false;
+    return;
+  }
+  if (!cloudReady) {
+    banner.className = 'system-banner system-banner-warn';
+    banner.textContent = cloudError || 'Не вдалося під’єднатися до спільної бібліотеки. Перевір налаштування Supabase.';
+    banner.hidden = false;
+    return;
+  }
+  if (isAdmin && data.length === 0 && loadData().length > 0) {
+    banner.className = 'system-banner system-banner-info';
+    banner.innerHTML = 'Знайдено матеріали, збережені в цьому браузері. <button class="text-button" id="migrateLocal">Перенести їх у спільну бібліотеку</button>';
+    banner.hidden = false;
+    $('#migrateLocal').onclick = migrateLocalLibrary;
+    return;
+  }
+  banner.hidden = true;
+  banner.textContent = '';
+}
+async function loadSharedLibrary() {
+  const { data: row, error } = await cloudClient.from('library_documents').select('data,revision').eq('id', 1).single();
+  if (error) throw error;
+  if (!Array.isArray(row.data)) throw new Error('Спільна бібліотека має некоректний формат.');
+  data = row.data;
+  sharedRevision = Number(row.revision);
+  cloudReady = true;
+  cloudError = '';
+}
+async function updateAdminRole(user, announce = false) {
+  currentUser = user || null;
+  isAdmin = false;
+  if (user && cloudClient) {
+    const { data: role, error } = await cloudClient.from('library_admins').select('user_id').eq('user_id', user.id).maybeSingle();
+    if (error) { console.error(error); cloudError = 'Не вдалося перевірити права адміністратора.'; }
+    isAdmin = Boolean(role);
+    if (announce && !isAdmin) notify('Цей акаунт має лише доступ для перегляду. Додай його до списку адміністраторів у Supabase.');
+  }
+  renderAccessState();
+  render();
+}
+async function migrateLocalLibrary() {
+  if (!isAdmin || !cloudReady) return;
+  const localCopy = loadData();
+  if (!localCopy.length || !confirm(`Перенести ${localCopy.length} предметів із цього браузера у спільну бібліотеку?`)) return;
+  const previousData = data;
+  data = localCopy;
+  if (!await saveData()) data = previousData;
+  else notify('Матеріали перенесено. Тепер вони доступні всім.');
+  render();
+}
+async function initializeApp() {
+  if (!cloudConfigured) { cloudReady = false; renderAccessState(); render(); return; }
+  cloudClient = window.supabase.createClient(cloudConfig.url, cloudConfig.anonKey);
+  try {
+    await loadSharedLibrary();
+    const { data: { session } } = await cloudClient.auth.getSession();
+    await updateAdminRole(session?.user, false);
+    cloudClient.auth.onAuthStateChange((_event, session) => {
+      setTimeout(() => updateAdminRole(session?.user, true), 0);
+    });
+    realtimeChannel = cloudClient.channel('shared-library-updates').on('postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'library_documents', filter: 'id=eq.1' },
+      (payload) => {
+        if (Array.isArray(payload.new?.data) && Number(payload.new.revision) > sharedRevision) {
+          data = payload.new.data;
+          sharedRevision = Number(payload.new.revision);
+          render();
+          renderAccessState();
+        }
+      }).subscribe();
+  } catch (error) {
+    console.error(error);
+    cloudReady = false;
+    cloudError = 'Спільна бібліотека ще не налаштована або недоступна. Перевір проєкт Supabase та виконай supabase/schema.sql.';
+    data = [];
+    renderAccessState();
+    render();
+  }
+}
+async function requestAdminLink(event) {
+  event.preventDefault();
+  if (!cloudReady) { notify('Спочатку потрібно під’єднати проєкт Supabase.'); return; }
+  const email = String(new FormData(event.currentTarget).get('email') || '').trim();
+  const { error } = await cloudClient.auth.signInWithOtp({ email, options: { emailRedirectTo: `${location.origin}${location.pathname}` } });
+  if (error) { notify('Не вдалося надіслати посилання. Перевір адресу пошти.'); console.error(error); return; }
+  $('#authDialog').close();
+  event.currentTarget.reset();
+  notify('Посилання для входу надіслано на пошту.');
+}
+async function handleAccountButton() {
+  if (currentUser) {
+    await cloudClient.auth.signOut();
+    await updateAdminRole(null, false);
+  } else if (cloudConfigured) $('#authDialog').showModal();
+  else notify('Вхід адміністратора стане доступним після підключення Supabase.');
+}
 function counts(sub) { return { topics: sub.topics.length, paragraphs: sub.topics.reduce((sum, item) => sum + item.paragraphs.length, 0) }; }
 function renderNav() {
+  $('#addSubject').hidden = !canManage();
   $('#subjectNav').innerHTML = data.map((sub) => {
     const count = counts(sub).paragraphs;
     return `<button class="subject-link ${current.subjectId === sub.id ? 'active' : ''}" data-subject="${esc(sub.id)}"><span class="subject-icon">${esc(sub.icon || '📚')}</span><span>${esc(sub.name)}</span><span class="subject-count">${count}</span></button>`;
@@ -62,13 +200,13 @@ function setBreadcrumbs(items) {
 }
 function render() { renderNav(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
 function renderHome() {
-  setBreadcrumbs([{ label: 'Моя бібліотека' }]);
+  setBreadcrumbs([{ label: 'Спільна бібліотека' }]);
   const totalTopics = data.reduce((sum, sub) => sum + sub.topics.length, 0);
   const totalParas = data.reduce((sum, sub) => sum + counts(sub).paragraphs, 0);
-  view.innerHTML = `<div class="welcome-row"><div><span class="eyebrow">ТВОЄ МІСЦЕ ДЛЯ ЗНАНЬ</span><h1>Усе важливе — поруч</h1><p>Збирай матеріали за предметами та повертайся до них будь-коли.</p></div><button class="button button-primary" id="homeAddSubject">＋ &nbsp;Додати предмет</button></div>
+  view.innerHTML = `<div class="welcome-row"><div><span class="eyebrow">ТВОЄ МІСЦЕ ДЛЯ ЗНАНЬ</span><h1>Усе важливе — поруч</h1><p>Спільна бібліотека для повторення матеріалів з усіх предметів.</p></div>${canManage()?'<button class="button button-primary" id="homeAddSubject">＋ &nbsp;Додати предмет</button>':''}</div>
     <div class="overview-grid"><div class="stat-card"><span class="stat-icon">📚</span><div><div class="stat-number">${data.length}</div><div class="stat-label">предметів</div></div></div><div class="stat-card"><span class="stat-icon">🗂️</span><div><div class="stat-number">${totalTopics}</div><div class="stat-label">тем</div></div></div><div class="stat-card"><span class="stat-icon">✍️</span><div><div class="stat-number">${totalParas}</div><div class="stat-label">параграфів</div></div></div></div>
     <div class="section-title"><h2>Предмети</h2><span>${data.length ? 'Обери, що повторити' : 'Почни з першого предмета'}</span></div>
-    ${data.length ? `<div class="subject-grid">${data.map((sub) => { const c = counts(sub); return `<article class="subject-card" data-open-subject="${esc(sub.id)}" style="--card-color:${esc(sub.color)};--card-tint:${esc(sub.tint)}"><div class="card-band"></div><div class="subject-card-body"><div class="card-top"><span class="card-emoji">${esc(sub.icon || '📚')}</span><button class="more-button" data-edit-subject="${esc(sub.id)}" aria-label="Налаштувати предмет ${esc(sub.name)}">···</button></div><h3>${esc(sub.name)}</h3><div class="card-meta">${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')}</div><div class="subject-card-foot"><span>${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</span><b>Відкрити →</b></div></div></article>`; }).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">📖</div><h3>Додай перший предмет</h3><p>Наприклад, біологію чи історію. Потім створи теми та додай параграфи для повторення.</p><button class="button button-primary" id="emptyAddSubject">＋ Додати предмет</button></div>`}`;
+    ${data.length ? `<div class="subject-grid">${data.map((sub) => { const c = counts(sub); return `<article class="subject-card" data-open-subject="${esc(sub.id)}" style="--card-color:${esc(sub.color)};--card-tint:${esc(sub.tint)}"><div class="card-band"></div><div class="subject-card-body"><div class="card-top"><span class="card-emoji">${esc(sub.icon || '📚')}</span>${canManage()?`<button class="more-button" data-edit-subject="${esc(sub.id)}" aria-label="Налаштувати предмет ${esc(sub.name)}">···</button>`:''}</div><h3>${esc(sub.name)}</h3><div class="card-meta">${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')}</div><div class="subject-card-foot"><span>${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</span><b>Відкрити →</b></div></div></article>`; }).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">📖</div><h3>${canManage()?'Спільна бібліотека поки порожня':'У бібліотеці поки немає предметів'}</h3><p>${canManage()?'Додай предмет або перенеси матеріали, збережені раніше в цьому браузері.':'Адміністратор ще не додав навчальні матеріали.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddSubject">＋ Додати предмет</button>':''}</div>`}`;
   $('#homeAddSubject')?.addEventListener('click', () => openEditor('subject'));
   $('#emptyAddSubject')?.addEventListener('click', () => openEditor('subject'));
   view.querySelectorAll('[data-open-subject]').forEach((el) => el.addEventListener('click', () => { current = { subjectId: el.dataset.openSubject, topicId: null, paragraphId: null }; render(); }));
@@ -76,27 +214,27 @@ function renderHome() {
 }
 function plural(n, one, few, many) { const n10=n%10,n100=n%100; return n10===1&&n100!==11?one:n10>=2&&n10<=4&&(n100<12||n100>14)?few:many; }
 function renderSubject(sub) {
-  setBreadcrumbs([{ label: 'Моя бібліотека', action: 'home' }, { label: sub.name }]); const c = counts(sub);
-  view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div><div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div></div>
+  setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name }]); const c = counts(sub);
+  view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div>':''}</div>
     <div class="section-title"><h2>Теми</h2><span>Обери тему, щоб переглянути параграфи</span></div>
-    ${sub.topics.length ? `<div class="topic-list">${sub.topics.map((top, i) => `<article class="topic-card" data-open-topic="${esc(top.id)}"><div class="topic-card-row"><span class="topic-index">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(top.name)}</h3><p>${esc(top.description || 'Натисни, щоб переглянути матеріали')}</p></div><button class="more-button" data-edit-topic="${esc(top.id)}" aria-label="Налаштувати тему">···</button><span class="topic-arrow">›</span></div><div class="topic-card-foot">${top.paragraphs.length} ${plural(top.paragraphs.length, 'параграф', 'параграфи', 'параграфів')}</div></article>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🗂️</div><h3>У цьому предметі ще немає тем</h3><p>Розділи предмет на теми, щоб матеріали було легше знаходити.</p><button class="button button-primary" id="emptyAddTopic">＋ Додати тему</button></div>`}`;
-  $('#editSubject').onclick=()=>openEditor('subject',sub.id);
-  $('#addTopic').onclick=()=>openEditor('topic');
+    ${sub.topics.length ? `<div class="topic-list">${sub.topics.map((top, i) => `<article class="topic-card" data-open-topic="${esc(top.id)}"><div class="topic-card-row"><span class="topic-index">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(top.name)}</h3><p>${esc(top.description || 'Натисни, щоб переглянути матеріали')}</p></div>${canManage()?`<button class="more-button" data-edit-topic="${esc(top.id)}" aria-label="Налаштувати тему">···</button>`:''}<span class="topic-arrow">›</span></div><div class="topic-card-foot">${top.paragraphs.length} ${plural(top.paragraphs.length, 'параграф', 'параграфи', 'параграфів')}</div></article>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🗂️</div><h3>У цьому предметі ще немає тем</h3><p>${canManage()?'Розділи предмет на теми, щоб матеріали було легше знаходити.':'Адміністратор ще не додав теми до цього предмета.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddTopic">＋ Додати тему</button>':''}</div>`}`;
+  $('#editSubject')?.addEventListener('click',()=>openEditor('subject',sub.id));
+  $('#addTopic')?.addEventListener('click',()=>openEditor('topic'));
   $('#emptyAddTopic')?.addEventListener('click',()=>openEditor('topic'));
   view.querySelectorAll('[data-open-topic]').forEach(el=>el.addEventListener('click',()=>{current.topicId=el.dataset.openTopic;current.paragraphId=null;render();}));
   view.querySelectorAll('[data-edit-topic]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();openEditor('topic',el.dataset.editTopic);}));
 }
 function renderTopic(sub, top) {
-  setBreadcrumbs([{ label:'Моя бібліотека',action:'home' },{ label:sub.name,action:'subject' },{ label:top.name }]);
-  view.innerHTML=`<button class="back-link" id="backToSubject">← &nbsp;Усі теми: ${esc(sub.name)}</button><div class="page-heading"><div><span class="eyebrow">ТЕМА</span><h1>${esc(top.name)}</h1><p>${esc(top.description || 'Матеріали для повторення')}</p></div><div class="heading-actions"><button class="button button-quiet" id="editTopic">Налаштувати</button><button class="button button-primary" id="addParagraph">＋ Додати параграф</button></div></div>
-  ${top.paragraphs.length?`<div class="paragraph-layout"><div class="paragraph-list">${top.paragraphs.map((p,i)=>`<article class="paragraph-row" data-open-paragraph="${esc(p.id)}"><span class="paragraph-no">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(p.name)}</h3><p>${esc(p.summary||'Відкрити матеріал')}</p></div>${p.image?'<span class="row-photo" title="Є зображення">▧</span>':''}<span class="topic-arrow">›</span></article>`).join('')}</div><aside class="study-tip"><strong>💡 Як повторювати</strong><p>Переглядай параграфи по одному та повертайся до них, коли потрібно освіжити знання.</p></aside></div>`:`<div class="empty-state"><div class="empty-icon">✍️</div><h3>Додай перший параграф</h3><p>Запиши пояснення, корисні факти чи додай зображення.</p><button class="button button-primary" id="emptyAddParagraph">＋ Додати параграф</button></div>`}`;
-  $('#backToSubject').onclick=()=>{current.topicId=null;render();};$('#editTopic').onclick=()=>openEditor('topic',top.id);$('#addParagraph').onclick=()=>openEditor('paragraph');$('#emptyAddParagraph')?.addEventListener('click',()=>openEditor('paragraph'));
+  setBreadcrumbs([{ label:'Спільна бібліотека',action:'home' },{ label:sub.name,action:'subject' },{ label:top.name }]);
+  view.innerHTML=`<button class="back-link" id="backToSubject">← &nbsp;Усі теми: ${esc(sub.name)}</button><div class="page-heading"><div><span class="eyebrow">ТЕМА</span><h1>${esc(top.name)}</h1><p>${esc(top.description || 'Матеріали для повторення')}</p></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editTopic">Налаштувати</button><button class="button button-primary" id="addParagraph">＋ Додати параграф</button></div>':''}</div>
+  ${top.paragraphs.length?`<div class="paragraph-layout"><div class="paragraph-list">${top.paragraphs.map((p,i)=>`<article class="paragraph-row" data-open-paragraph="${esc(p.id)}"><span class="paragraph-no">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(p.name)}</h3><p>${esc(p.summary||'Відкрити матеріал')}</p></div>${p.image?'<span class="row-photo" title="Є зображення">▧</span>':''}<span class="topic-arrow">›</span></article>`).join('')}</div><aside class="study-tip"><strong>💡 Як повторювати</strong><p>Переглядай параграфи по одному та повертайся до них, коли потрібно освіжити знання.</p></aside></div>`:`<div class="empty-state"><div class="empty-icon">✍️</div><h3>${canManage()?'Додай перший параграф':'Параграфів поки немає'}</h3><p>${canManage()?'Запиши пояснення, корисні факти чи додай зображення.':'Адміністратор ще не додав матеріали до цієї теми.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddParagraph">＋ Додати параграф</button>':''}</div>`}`;
+  $('#backToSubject').onclick=()=>{current.topicId=null;render();};$('#editTopic')?.addEventListener('click',()=>openEditor('topic',top.id));$('#addParagraph')?.addEventListener('click',()=>openEditor('paragraph'));$('#emptyAddParagraph')?.addEventListener('click',()=>openEditor('paragraph'));
   view.querySelectorAll('[data-open-paragraph]').forEach(el=>el.addEventListener('click',()=>{current.paragraphId=el.dataset.openParagraph;render();}));
 }
 function renderParagraph(sub,top,p) {
-  setBreadcrumbs([{label:'Моя бібліотека',action:'home'},{label:sub.name,action:'subject'},{label:top.name,action:'topic'}]);
-  view.innerHTML=`<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button><div class="article-actions"><button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button></div><article class="article-card"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary?`<p class="article-summary">${esc(p.summary)}</p>`:''}${p.image?`<img class="article-image" src="${p.image}" alt="Зображення до параграфа: ${esc(p.name)}">`:''}<div class="article-body">${esc(p.content||'Додай сюди свої нотатки.')}</div></article>`;
-  $('#backToTopic').onclick=()=>{current.paragraphId=null;render();};$('#editParagraph').onclick=()=>openEditor('paragraph',p.id);$('#deleteParagraph').onclick=()=>removeItem('paragraph',p.id);
+  setBreadcrumbs([{label:'Спільна бібліотека',action:'home'},{label:sub.name,action:'subject'},{label:top.name,action:'topic'}]);
+  view.innerHTML=`<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button>${canManage()?'<div class="article-actions"><button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button></div>':''}<article class="article-card"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary?`<p class="article-summary">${esc(p.summary)}</p>`:''}${p.image?`<img class="article-image" src="${p.image}" alt="Зображення до параграфа: ${esc(p.name)}">`:''}<div class="article-body">${esc(p.content||'Додай сюди свої нотатки.')}</div></article>`;
+  $('#backToTopic').onclick=()=>{current.paragraphId=null;render();};$('#editParagraph')?.addEventListener('click',()=>openEditor('paragraph',p.id));$('#deleteParagraph')?.addEventListener('click',()=>removeItem('paragraph',p.id));
 }
 function renderSearch(query) {
   const q=query.trim().toLocaleLowerCase('uk'); if(!q){render();return;}
@@ -106,6 +244,7 @@ function renderSearch(query) {
   view.querySelectorAll('[data-result]').forEach(el=>el.addEventListener('click',()=>{const [subjectId,topicId,paragraphId]=el.dataset.result.split('|');current={subjectId,topicId,paragraphId};$('#searchInput').value='';render();}));
 }
 function openEditor(kind,id=null) {
+  if (!canManage()) { notify('Редагувати спільні матеріали може лише адміністратор.'); return; }
   editContext={kind,id};const dialog=$('#editorDialog'),fields=$('#formFields');const isEdit=Boolean(id);$('#dialogEyebrow').textContent=isEdit?'РЕДАГУВАННЯ':'НОВИЙ ЗАПИС';
   const item=kind==='subject'?subject(id):kind==='topic'?topic(subject(current.subjectId),id):paragraph(topic(subject(current.subjectId),current.topicId),id);
   const labels={subject:['предмет','Предмет'],topic:['тему','Тему'],paragraph:['параграф','Параграф']};$('#dialogTitle').textContent=`${isEdit?'Змінити':'Додати'} ${labels[kind][0]}`;
@@ -120,7 +259,7 @@ function openEditor(kind,id=null) {
 }
 function compressImage(file) { return new Promise((resolve,reject)=>{if(!file.type.startsWith('image/'))return reject();const reader=new FileReader();reader.onerror=reject;reader.onload=()=>{const image=new Image();image.onerror=reject;image.onload=()=>{const scale=Math.min(1,1400/Math.max(image.width,image.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.width*scale));canvas.height=Math.max(1,Math.round(image.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',.78));};image.src=reader.result;};reader.readAsDataURL(file);}); }
 function closeEditor(){ $('#editorDialog').close();editContext=null; }
-function saveEditor(event) {
+async function saveEditor(event) {
   event.preventDefault();if(!editContext)return;const {kind,id}=editContext;const form=new FormData(event.currentTarget);const name=String(form.get('name')||'').trim();
   const previousData=structuredClone(data);
   if(kind==='subject'){
@@ -133,13 +272,14 @@ function saveEditor(event) {
     const top=topic(subject(current.subjectId),current.topicId);const preview=$('#imagePreview');let image=id?paragraph(top,id).image:'';if(preview?.dataset.removed==='true')image='';if(preview?.dataset.newImage)image=preview.dataset.newImage;
     const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),image};if(id)Object.assign(paragraph(top,id),item);else top.paragraphs.push({id:uid(),...item});
   }
-  if(!saveData()){data=previousData;return;}
+  if(!await saveData()){data=previousData;return;}
   closeEditor();render();notify(`${labelsWord(kind)} ${id?'оновлено':'додано'}`);
 }
 function labelsWord(kind){return {subject:'Предмет',topic:'Тему',paragraph:'Параграф'}[kind];}
-function removeItem(kind,id){const words={subject:'предмет разом з усіма його темами й параграфами',topic:'тему разом з усіма її параграфами',paragraph:'параграф'};if(!confirm(`Видалити ${words[kind]}? Цю дію не можна скасувати.`))return;if(kind==='subject'){data=data.filter(x=>x.id!==id);current={subjectId:null,topicId:null,paragraphId:null};}if(kind==='topic'){const sub=subject(current.subjectId);sub.topics=sub.topics.filter(x=>x.id!==id);current.topicId=null;}if(kind==='paragraph'){const top=topic(subject(current.subjectId),current.topicId);top.paragraphs=top.paragraphs.filter(x=>x.id!==id);current.paragraphId=null;}saveData();render();notify('Матеріал видалено');}
+async function removeItem(kind,id){if(!canManage())return;const words={subject:'предмет разом з усіма його темами й параграфами',topic:'тему разом з усіма її параграфами',paragraph:'параграф'};if(!confirm(`Видалити ${words[kind]}? Цю дію не можна скасувати.`))return;const previousData=structuredClone(data);if(kind==='subject'){data=data.filter(x=>x.id!==id);current={subjectId:null,topicId:null,paragraphId:null};}if(kind==='topic'){const sub=subject(current.subjectId);sub.topics=sub.topics.filter(x=>x.id!==id);current.topicId=null;}if(kind==='paragraph'){const top=topic(subject(current.subjectId),current.topicId);top.paragraphs=top.paragraphs.filter(x=>x.id!==id);current.paragraphId=null;}if(!await saveData())data=previousData;else notify('Матеріал видалено');render();}
 function backup(){const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),subjects:data},null,2)],{type:'application/json'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='tetrad-backup.json';link.click();URL.revokeObjectURL(link.href);}
-async function importBackup(file){try{const parsed=JSON.parse(await file.text());const candidate=Array.isArray(parsed)?parsed:parsed.subjects;if(!Array.isArray(candidate)||candidate.some(s=>typeof s.name!=='string'||!Array.isArray(s.topics)))throw new Error();if(!confirm(`Замінити поточну бібліотеку? Буде імпортовано предметів: ${candidate.length}.`))return;data=candidate;current={subjectId:null,topicId:null,paragraphId:null};saveData();render();notify('Резервну копію завантажено');}catch{notify('Цей файл не схожий на копію бібліотеки.');}}
-$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>$('#importFile').click();$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
+async function importBackup(file){if(!canManage())return;const previousData=structuredClone(data);try{const parsed=JSON.parse(await file.text());const candidate=Array.isArray(parsed)?parsed:parsed.subjects;if(!Array.isArray(candidate)||candidate.some(s=>typeof s.name!=='string'||!Array.isArray(s.topics)))throw new Error();if(!confirm(`Замінити поточну бібліотеку? Буде імпортовано предметів: ${candidate.length}.`))return;data=candidate;current={subjectId:null,topicId:null,paragraphId:null};if(!await saveData())data=previousData;else notify('Спільну бібліотеку оновлено');render();}catch{data=previousData;notify('Цей файл не схожий на копію бібліотеки.');}}
+$('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
+$('#accountButton').addEventListener('click',handleAccountButton);$('#authForm').addEventListener('submit',requestAdminLink);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#searchInput').addEventListener('input',e=>renderSearch(e.target.value));document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
-render();
+initializeApp();

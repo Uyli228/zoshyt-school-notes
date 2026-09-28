@@ -16,18 +16,22 @@
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 7.5A3.5 3.5 0 0 1 11.5 4H25v21H11.5A3.5 3.5 0 0 0 8 28V7.5Z" fill="currentColor" opacity=".2"/><path d="M8 7.5A3.5 3.5 0 0 1 11.5 4H25v21H11.5A3.5 3.5 0 0 0 8 28V7.5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 8h13M8 25c0-1.9 1.6-3.5 3.5-3.5H25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
         <span><strong>Зошит</strong><small>твоя бібліотека знань</small></span>
       </a>
-      <div class="side-heading"><span>МОЇ ПРЕДМЕТИ</span><button class="icon-button" id="addSubject" aria-label="Додати предмет" title="Додати предмет">＋</button></div>
+      <div class="side-heading"><span>ПРЕДМЕТИ</span><button class="icon-button" id="addSubject" aria-label="Додати предмет" title="Додати предмет">＋</button></div>
       <nav id="subjectNav" class="subject-nav"></nav>
-      <div class="sidebar-bottom"><div class="storage-note"><span class="storage-dot"></span><span>Дані зберігаються<br>у цьому браузері</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton">↙ &nbsp;Імпорт копії</button></div>
+      <div class="sidebar-bottom"><div class="storage-note" id="storageNote"><span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton" hidden>↙ &nbsp;Імпорт копії</button></div>
     </aside>
     <main class="main-area">
-      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Моя бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему або параграф…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><button class="avatar" aria-label="Особиста бібліотека">Я</button></header>
+      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Моя бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему або параграф…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><button class="button button-quiet account-button" id="accountButton" type="button">Вхід адміністратора</button></header>
+      <div id="systemBanner" class="system-banner" hidden></div>
       <section id="view" class="view" aria-live="polite"></section>
     </main>
   </div>
   <input id="importFile" type="file" accept="application/json,.json" hidden>
   <dialog id="editorDialog" class="editor-dialog"><form id="editorForm" method="dialog"><div class="dialog-head"><div><span class="eyebrow" id="dialogEyebrow">НОВИЙ ЗАПИС</span><h2 id="dialogTitle">Додати предмет</h2></div><button type="button" class="icon-button close-button" id="closeDialog" aria-label="Закрити">×</button></div><div id="formFields" class="form-fields"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="cancelDialog">Скасувати</button><button type="submit" class="button button-primary">Зберегти</button></div></form></dialog>
+  <dialog id="authDialog" class="editor-dialog"><form id="authForm" method="dialog"><div class="dialog-head"><div><span class="eyebrow">ДОСТУП ДО КЕРУВАННЯ</span><h2>Вхід адміністратора</h2></div><button type="button" class="icon-button close-button" id="closeAuthDialog" aria-label="Закрити">×</button></div><div class="form-fields"><p class="auth-copy">Введи пошту адміністратора. Ми надішлемо одноразове посилання для входу. Звичайні відвідувачі можуть переглядати матеріали без входу.</p><div class="field"><label for="adminEmail">Електронна пошта</label><input id="adminEmail" name="email" type="email" autocomplete="email" required placeholder="name@example.com"></div></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="cancelAuthDialog">Скасувати</button><button type="submit" class="button button-primary">Надіслати посилання</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
