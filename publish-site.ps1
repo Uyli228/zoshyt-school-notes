@@ -7,19 +7,23 @@ function Stop-Publish([string]$Message) {
 }
 
 function Invoke-Gh([string[]]$Arguments, [switch]$AllowFailure) {
-    if ($AllowFailure) {
+    $previousPreference = $ErrorActionPreference
+    if ($AllowFailure) { $ErrorActionPreference = 'Continue' }
+    try {
         $output = & $script:ghPath @Arguments 2>$null
-    } else {
-        $output = & $script:ghPath @Arguments
+        $code = $LASTEXITCODE
+    } catch {
+        if ($AllowFailure) { return $null }
+        throw
+    } finally {
+        $ErrorActionPreference = $previousPreference
     }
-    $code = $LASTEXITCODE
     if ($code -ne 0 -and -not $AllowFailure) {
         throw "Команда GitHub CLI завершила роботу з помилкою: gh $($Arguments -join ' ')"
     }
     if ($code -ne 0) { return $null }
     return $output
 }
-
 function Invoke-Git([string[]]$Arguments) {
     & git @Arguments
     if ($LASTEXITCODE -ne 0) {
