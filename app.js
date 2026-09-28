@@ -53,7 +53,12 @@ function renderNav() {
 }
 function setBreadcrumbs(items) {
   $('#breadcrumbs').innerHTML = items.map((item, index) => `${index ? '<span class="crumb-sep">/</span>' : ''}${item.action ? `<button data-crumb="${item.action}">${esc(item.label)}</button>` : `<strong>${esc(item.label)}</strong>`}`).join('');
-  $('#breadcrumbs').querySelectorAll('[data-crumb]').forEach((el) => el.addEventListener('click', () => { if (el.dataset.crumb === 'home') current = { subjectId: null, topicId: null, paragraphId: null }; if (el.dataset.crumb === 'subject') current.topicId = current.paragraphId = null; render(); }));
+  $('#breadcrumbs').querySelectorAll('[data-crumb]').forEach((el) => el.addEventListener('click', () => {
+    if (el.dataset.crumb === 'home') current = { subjectId: null, topicId: null, paragraphId: null };
+    if (el.dataset.crumb === 'subject') current.topicId = current.paragraphId = null;
+    if (el.dataset.crumb === 'topic') current.paragraphId = null;
+    render();
+  }));
 }
 function render() { renderNav(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
 function renderHome() {
@@ -66,7 +71,7 @@ function renderHome() {
     ${data.length ? `<div class="subject-grid">${data.map((sub) => { const c = counts(sub); return `<article class="subject-card" data-open-subject="${esc(sub.id)}" style="--card-color:${esc(sub.color)};--card-tint:${esc(sub.tint)}"><div class="card-band"></div><div class="subject-card-body"><div class="card-top"><span class="card-emoji">${esc(sub.icon || '📚')}</span><button class="more-button" data-edit-subject="${esc(sub.id)}" aria-label="Налаштувати предмет ${esc(sub.name)}">···</button></div><h3>${esc(sub.name)}</h3><div class="card-meta">${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')}</div><div class="subject-card-foot"><span>${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</span><b>Відкрити →</b></div></div></article>`; }).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">📖</div><h3>Додай перший предмет</h3><p>Наприклад, біологію чи історію. Потім створи теми та додай параграфи для повторення.</p><button class="button button-primary" id="emptyAddSubject">＋ Додати предмет</button></div>`}`;
   $('#homeAddSubject')?.addEventListener('click', () => openEditor('subject'));
   $('#emptyAddSubject')?.addEventListener('click', () => openEditor('subject'));
-  view.querySelectorAll('[data-open-subject]').forEach((el) => el.addEventListener('click', () => { current.subjectId = el.dataset.openSubject; render(); }));
+  view.querySelectorAll('[data-open-subject]').forEach((el) => el.addEventListener('click', () => { current = { subjectId: el.dataset.openSubject, topicId: null, paragraphId: null }; render(); }));
   view.querySelectorAll('[data-edit-subject]').forEach((el) => el.addEventListener('click', (event) => { event.stopPropagation(); openEditor('subject', el.dataset.editSubject); }));
 }
 function plural(n, one, few, many) { const n10=n%10,n100=n%100; return n10===1&&n100!==11?one:n10>=2&&n10<=4&&(n100<12||n100>14)?few:many; }
@@ -75,7 +80,10 @@ function renderSubject(sub) {
   view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div><div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div></div>
     <div class="section-title"><h2>Теми</h2><span>Обери тему, щоб переглянути параграфи</span></div>
     ${sub.topics.length ? `<div class="topic-list">${sub.topics.map((top, i) => `<article class="topic-card" data-open-topic="${esc(top.id)}"><div class="topic-card-row"><span class="topic-index">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(top.name)}</h3><p>${esc(top.description || 'Натисни, щоб переглянути матеріали')}</p></div><button class="more-button" data-edit-topic="${esc(top.id)}" aria-label="Налаштувати тему">···</button><span class="topic-arrow">›</span></div><div class="topic-card-foot">${top.paragraphs.length} ${plural(top.paragraphs.length, 'параграф', 'параграфи', 'параграфів')}</div></article>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🗂️</div><h3>У цьому предметі ще немає тем</h3><p>Розділи предмет на теми, щоб матеріали було легше знаходити.</p><button class="button button-primary" id="emptyAddTopic">＋ Додати тему</button></div>`}`;
-  view.querySelectorAll('[data-open-topic]').forEach(el=>el.addEventListener('click',()=>{current.topicId=el.dataset.openTopic;render();}));
+  $('#editSubject').onclick=()=>openEditor('subject',sub.id);
+  $('#addTopic').onclick=()=>openEditor('topic');
+  $('#emptyAddTopic')?.addEventListener('click',()=>openEditor('topic'));
+  view.querySelectorAll('[data-open-topic]').forEach(el=>el.addEventListener('click',()=>{current.topicId=el.dataset.openTopic;current.paragraphId=null;render();}));
   view.querySelectorAll('[data-edit-topic]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();openEditor('topic',el.dataset.editTopic);}));
 }
 function renderTopic(sub, top) {
@@ -86,7 +94,7 @@ function renderTopic(sub, top) {
   view.querySelectorAll('[data-open-paragraph]').forEach(el=>el.addEventListener('click',()=>{current.paragraphId=el.dataset.openParagraph;render();}));
 }
 function renderParagraph(sub,top,p) {
-  setBreadcrumbs([{label:'Моя бібліотека',action:'home'},{label:sub.name,action:'subject'},{label:top.name,action:'subject'}]);
+  setBreadcrumbs([{label:'Моя бібліотека',action:'home'},{label:sub.name,action:'subject'},{label:top.name,action:'topic'}]);
   view.innerHTML=`<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button><div class="article-actions"><button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button></div><article class="article-card"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary?`<p class="article-summary">${esc(p.summary)}</p>`:''}${p.image?`<img class="article-image" src="${p.image}" alt="Зображення до параграфа: ${esc(p.name)}">`:''}<div class="article-body">${esc(p.content||'Додай сюди свої нотатки.')}</div></article>`;
   $('#backToTopic').onclick=()=>{current.paragraphId=null;render();};$('#editParagraph').onclick=()=>openEditor('paragraph',p.id);$('#deleteParagraph').onclick=()=>removeItem('paragraph',p.id);
 }
@@ -114,6 +122,7 @@ function compressImage(file) { return new Promise((resolve,reject)=>{if(!file.ty
 function closeEditor(){ $('#editorDialog').close();editContext=null; }
 function saveEditor(event) {
   event.preventDefault();if(!editContext)return;const {kind,id}=editContext;const form=new FormData(event.currentTarget);const name=String(form.get('name')||'').trim();
+  const previousData=structuredClone(data);
   if(kind==='subject'){
     if(id){Object.assign(subject(id),{name,icon:String(form.get('icon')||'📚').trim()||'📚',color:form.get('color'),tint:form.get('tint')});}
     else{const c=colors[data.length%colors.length];data.push({id:uid(),name,icon:String(form.get('icon')||'📚').trim()||'📚',color:form.get('color')||c.color,tint:form.get('tint')||c.tint,topics:[]});}
@@ -124,7 +133,8 @@ function saveEditor(event) {
     const top=topic(subject(current.subjectId),current.topicId);const preview=$('#imagePreview');let image=id?paragraph(top,id).image:'';if(preview?.dataset.removed==='true')image='';if(preview?.dataset.newImage)image=preview.dataset.newImage;
     const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),image};if(id)Object.assign(paragraph(top,id),item);else top.paragraphs.push({id:uid(),...item});
   }
-  saveData();closeEditor();render();notify(`${labelsWord(kind)} ${id?'оновлено':'додано'}`);
+  if(!saveData()){data=previousData;return;}
+  closeEditor();render();notify(`${labelsWord(kind)} ${id?'оновлено':'додано'}`);
 }
 function labelsWord(kind){return {subject:'Предмет',topic:'Тему',paragraph:'Параграф'}[kind];}
 function removeItem(kind,id){const words={subject:'предмет разом з усіма його темами й параграфами',topic:'тему разом з усіма її параграфами',paragraph:'параграф'};if(!confirm(`Видалити ${words[kind]}? Цю дію не можна скасувати.`))return;if(kind==='subject'){data=data.filter(x=>x.id!==id);current={subjectId:null,topicId:null,paragraphId:null};}if(kind==='topic'){const sub=subject(current.subjectId);sub.topics=sub.topics.filter(x=>x.id!==id);current.topicId=null;}if(kind==='paragraph'){const top=topic(subject(current.subjectId),current.topicId);top.paragraphs=top.paragraphs.filter(x=>x.id!==id);current.paragraphId=null;}saveData();render();notify('Матеріал видалено');}
