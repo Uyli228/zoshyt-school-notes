@@ -2,6 +2,7 @@ const STORAGE_KEY = 'tetrad-library-v1';
 const PREFS_KEY = 'zoshit-reader-preferences-v1';
 const QUIZZES_KEY = 'zoshit-personal-quizzes-v1';
 const FLASHCARDS_KEY = 'zoshit-personal-flashcards-v1';
+const COMMENT_NOTIFICATIONS_KEY = 'zoshit-comment-notifications-v1';
 const colors = [
   { color: '#7969dd', tint: '#f0edff' }, { color: '#42a997', tint: '#e9f7f4' },
   { color: '#e8a04e', tint: '#fff4e7' }, { color: '#e17082', tint: '#fff0f2' },
@@ -56,6 +57,9 @@ let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
 let editContext = null;
 let notePromptUsed = { item: false, submission: false };
+let commentNotificationCheckedUserId = null;
+let commentNotificationItems = [];
+let pendingCommentScrollId = null;
 let toastTimer;
 const $ = (selector) => document.querySelector(selector);
 const view = $('#view');
@@ -305,6 +309,7 @@ async function loadSharedLibrary() {
 }
 async function updateAdminRole(user, announce = false) {
   currentUser = user || null;
+  if (!currentUser) commentNotificationCheckedUserId = null;
   isAdmin = false;
   if (user && cloudClient) {
     const { data: role, error } = await cloudClient.from('library_admins').select('user_id').eq('user_id', user.id).maybeSingle();
@@ -315,6 +320,63 @@ async function updateAdminRole(user, announce = false) {
   await loadPendingSubmissionCount();
   renderAccessState();
   render();
+  if (currentUser) checkForCommentNotifications();
+}
+async function checkForCommentNotifications() {
+  const userId = currentUser?.id;
+  if (!userId || !cloudReady || !cloudClient || commentNotificationCheckedUserId === userId) return;
+  commentNotificationCheckedUserId = userId;
+  const ownedParagraphs = new Map();
+  data.forEach((sub) => sub.topics.forEach((top) => top.paragraphs.forEach((item) => {
+    if (item.ownerId === userId) ownedParagraphs.set(String(item.id), { paragraphId: String(item.id), title: item.name, subjectName: sub.name, topicName: top.name, publishedAt: item.createdAt || item.updatedAt || '' });
+  })));
+  const { data: submissions, error: submissionsError } = await cloudClient.from('library_submissions')
+    .select('published_paragraph_id,title,subject_name,topic_name,reviewed_at')
+    .eq('author_id', userId).eq('status', 'approved').not('published_paragraph_id', 'is', null);
+  if (!submissionsError) {
+    submissions.forEach((post) => ownedParagraphs.set(String(post.published_paragraph_id), {
+      paragraphId: String(post.published_paragraph_id), title: post.title, subjectName: post.subject_name,
+      topicName: post.topic_name, publishedAt: post.reviewed_at || ''
+    }));
+  } else if (!/published_paragraph_id|schema cache/i.test(submissionsError.message || '')) console.error(submissionsError);
+  const paragraphIds = [...ownedParagraphs.keys()];
+  if (!paragraphIds.length) return;
+  const { data: comments, error } = await cloudClient.from('library_comments')
+    .select('id,paragraph_id,author_id,author_name,body,created_at')
+    .in('paragraph_id', paragraphIds).order('created_at', { ascending: false }).limit(200);
+  if (error) { console.error('Не вдалося перевірити коментарі до власних конспектів:', error); return; }
+  let seenIds = [];
+  const seenKey = `${COMMENT_NOTIFICATIONS_KEY}:${userId}`;
+  try { const saved = JSON.parse(localStorage.getItem(seenKey) || '[]'); if (Array.isArray(saved)) seenIds = saved; } catch { /* Сповіщення залишаються доступними в цій сесії. */ }
+  const seen = new Set(seenIds);
+  commentNotificationItems = comments.filter((comment) => {
+    const post = ownedParagraphs.get(String(comment.paragraph_id));
+    return post && comment.author_id !== userId && !seen.has(comment.id)
+      && (!post.publishedAt || new Date(comment.created_at) > new Date(post.publishedAt));
+  }).map((comment) => ({ ...comment, post: ownedParagraphs.get(String(comment.paragraph_id)) }));
+  if (!commentNotificationItems.length || $('#commentNotificationDialog').open) return;
+  const first = commentNotificationItems[0];
+  $('#commentNotificationHeadline').textContent = 'Тобі написали коментар!';
+  $('#commentNotificationSummary').textContent = commentNotificationItems.length === 1
+    ? `Новий коментар під твоїм конспектом «${first.post.title}».`
+    : `У тебе ${commentNotificationItems.length} нових ${plural(commentNotificationItems.length, 'коментар', 'коментарі', 'коментарів')} під конспектами. Спершу переглянь цей:`;
+  $('#commentNotificationPost').textContent = `${first.post.subjectName} · ${first.post.topicName} · ${first.post.title}`;
+  $('#commentNotificationPreview').textContent = `«${first.body.slice(0, 220)}${first.body.length > 220 ? '…' : ''}» — ${first.author_name}`;
+  $('#commentNotificationDialog').showModal();
+}
+function openNotifiedComment() {
+  const notification = commentNotificationItems[0];
+  if (!notification) return;
+  const userId = currentUser?.id;
+  const seenKey = `${COMMENT_NOTIFICATIONS_KEY}:${userId}`;
+  let seen = [];
+  try { const saved = JSON.parse(localStorage.getItem(seenKey) || '[]'); if (Array.isArray(saved)) seen = saved; } catch { /* Continue without saved notification state. */ }
+  try { localStorage.setItem(seenKey, JSON.stringify([...new Set([...seen, notification.id])].slice(-500))); } catch { /* The comment remains readable even if storage is unavailable. */ }
+  $('#commentNotificationDialog').close();
+  const found = findParagraph(notification.paragraphId);
+  if (!found) { notify('Цей конспект більше недоступний у бібліотеці.'); return; }
+  pendingCommentScrollId = notification.paragraphId;
+  openParagraph(found.sub, found.top, found.paragraph);
 }
 async function loadPendingSubmissionCount() {
   pendingSubmissionCount = 0;
@@ -709,7 +771,7 @@ function renderParagraph(sub, top, p) {
     <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body">${esc(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
     ${quizzes.length ? `<section class="personal-note"><div class="section-title"><h2>Мої квізи</h2><span>Зберігаються в цьому браузері</span></div><div class="personal-list">${quizzes.map((quiz, index) => `<button class="personal-item" data-start-quiz="${index}"><span><strong>${esc(quiz.title)}</strong><small>${quiz.questions.length} запитань</small></span><span class="personal-status">Почати →</span></button>`).join('')}</div></section>` : ''}
     <section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id] || '')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>
-    <section class="comments-panel"><div class="section-title"><h2>Коментарі</h2><span id="commentCount">Завантаження…</span></div><p class="auth-copy">Коментувати можуть лише користувачі, які увійшли. Ліміт: 4 коментарі за 10 хвилин і 15 за добу.</p>${currentUser ? `<form id="commentForm" class="comment-form"><textarea name="body" maxlength="1200" minlength="2" required placeholder="Запитай або доповни матеріал…"></textarea><button class="button button-primary" type="submit">Надіслати коментар</button></form>` : `<button class="button button-quiet" id="commentSignIn">Увійди, щоб коментувати</button>`}<div id="commentList" class="comment-list"><p class="auth-copy">Завантажую коментарі…</p></div></section>`;
+    <section class="comments-panel" id="commentsPanel"><div class="section-title"><h2>Коментарі</h2><span id="commentCount">Завантаження…</span></div><p class="auth-copy">Коментувати можуть лише користувачі, які увійшли. Ліміт: 4 коментарі за 10 хвилин і 15 за добу.</p>${currentUser ? `<form id="commentForm" class="comment-form"><textarea name="body" maxlength="1200" minlength="2" required placeholder="Запитай або доповни матеріал…"></textarea><button class="button button-primary" type="submit">Надіслати коментар</button></form>` : `<button class="button button-quiet" id="commentSignIn">Увійди, щоб коментувати</button>`}<div id="commentList" class="comment-list"><p class="auth-copy">Завантажую коментарі…</p></div></section>`;
   $('#backToTopic').onclick = () => { clearSharedParagraphUrl(); current.paragraphId = null; render(); };
   $('#shareParagraph').onclick = () => shareParagraph(sub, top, p);
   $('#favoriteParagraph').onclick = () => { readerPrefs.favorites = readerPrefs.favorites.includes(p.id) ? readerPrefs.favorites.filter((id) => id !== p.id) : [p.id, ...readerPrefs.favorites]; saveReaderPrefs(); render(); };
@@ -858,6 +920,10 @@ async function loadComments(paragraphId) {
   count.textContent = `${comments.length} ${plural(comments.length, 'коментар', 'коментарі', 'коментарів')}`;
   list.innerHTML = comments.length ? comments.map((comment) => `<article class="comment-card"><div class="comment-meta"><strong>${esc(comment.author_name)}</strong><time>${new Date(comment.created_at).toLocaleString('uk-UA')}</time>${currentUser && (isAdmin || currentUser.id === comment.author_id) ? `<button class="text-button danger-action" data-delete-comment="${esc(comment.id)}">Видалити</button>` : ''}</div><p>${esc(comment.body)}</p></article>`).join('') : '<p class="auth-copy">Коментарів поки немає. Будь першим, хто поставить запитання чи поділиться думкою.</p>';
   list.querySelectorAll('[data-delete-comment]').forEach((button) => button.addEventListener('click', () => deleteComment(button.dataset.deleteComment, paragraphId)));
+  if (pendingCommentScrollId === paragraphId) {
+    pendingCommentScrollId = null;
+    $('#commentsPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 async function submitComment(event, paragraphId) {
   event.preventDefault();
@@ -920,7 +986,7 @@ async function saveEditor(event) {
     else sub.topics.push({id:uid(),name,description:String(form.get('description')||'').trim(),paragraphs:[]});
   } else {
     const top=topic(subject(current.subjectId),current.topicId);const preview=$('#imagePreview');const existing=id?paragraph(top,id):null;let image=existing?.image||'';if(preview?.dataset.removed==='true')image='';if(preview?.dataset.newImage)image=preview.dataset.newImage;
-    const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),tags:[...new Set(String(form.get('tags')||'').split(',').map((tag)=>tag.trim()).filter(Boolean))],image,quiz:studyTools.quiz,flashcards:studyTools.flashcards};
+    const item={name,summary:String(form.get('summary')||'').trim(),content:String(form.get('content')||'').trim(),tags:[...new Set(String(form.get('tags')||'').split(',').map((tag)=>tag.trim()).filter(Boolean))],image,quiz:studyTools.quiz,flashcards:studyTools.flashcards,ownerId:existing?.ownerId||currentUser?.id||null,createdAt:existing?.createdAt||new Date().toISOString()};
     if(id){const changed=['name','summary','content','tags','image','quiz','flashcards'].some((key)=>JSON.stringify(existing[key]??(key==='tags'?[]:''))!==JSON.stringify(item[key]));const history=Array.isArray(existing.history)?existing.history:[];if(changed)existing.history=[...history,{name:existing.name,summary:existing.summary||'',content:existing.content||'',tags:existing.tags||[],image:existing.image||'',updatedAt:existing.updatedAt||new Date().toISOString()}].slice(-8);Object.assign(existing,item,{updatedAt:changed?new Date().toISOString():(existing.updatedAt||'')});}
     else top.paragraphs.push({id:uid(),...item,updatedAt:new Date().toISOString(),history:[]});
   }
@@ -936,6 +1002,7 @@ $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNote
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
 $('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
+$('#commentNotificationGo').addEventListener('click',openNotifiedComment);$('#commentNotificationLater').addEventListener('click',()=>$('#commentNotificationDialog').close());$('#commentNotificationDialog').addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();

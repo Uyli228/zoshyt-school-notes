@@ -20,7 +20,36 @@ alter table public.library_submissions
   add column if not exists quiz_data jsonb
   check (quiz_data is null or (jsonb_typeof(quiz_data) = 'object' and octet_length(quiz_data::text) <= 30000)),
   add column if not exists flashcards_data jsonb
-  check (flashcards_data is null or (jsonb_typeof(flashcards_data) = 'object' and octet_length(flashcards_data::text) <= 30000));
+  check (flashcards_data is null or (jsonb_typeof(flashcards_data) = 'object' and octet_length(flashcards_data::text) <= 30000)),
+  add column if not exists published_paragraph_id text
+  check (published_paragraph_id is null or char_length(btrim(published_paragraph_id)) between 1 and 120);
+
+-- Link already-approved submissions to their published paragraph when the match is unambiguous.
+with matches as (
+  select
+    submission.id as submission_id,
+    paragraphs.value->>'id' as paragraph_id,
+    count(*) over (partition by submission.id) as match_count,
+    row_number() over (partition by submission.id order by paragraphs.value->>'id') as match_number
+  from public.library_submissions as submission
+  cross join public.library_documents as library
+  cross join lateral jsonb_array_elements(library.data) as subjects(value)
+  cross join lateral jsonb_array_elements(coalesce(subjects.value->'topics', '[]'::jsonb)) as topics(value)
+  cross join lateral jsonb_array_elements(coalesce(topics.value->'paragraphs', '[]'::jsonb)) as paragraphs(value)
+  where library.id = 1
+    and submission.status = 'approved'
+    and submission.published_paragraph_id is null
+    and lower(btrim(subjects.value->>'name')) = lower(btrim(submission.subject_name))
+    and lower(btrim(topics.value->>'name')) = lower(btrim(submission.topic_name))
+    and lower(btrim(paragraphs.value->>'name')) = lower(btrim(submission.title))
+    and btrim(paragraphs.value->>'content') = btrim(submission.content)
+)
+update public.library_submissions as submission
+set published_paragraph_id = matches.paragraph_id
+from matches
+where matches.submission_id = submission.id
+  and matches.match_count = 1
+  and matches.match_number = 1;
 revoke all on table public.library_submissions from anon, authenticated;
 grant select, insert on table public.library_submissions to authenticated;
 
@@ -53,6 +82,7 @@ begin
   new.reviewer_id := null;
   new.reviewed_at := null;
   new.created_at := now();
+  new.published_paragraph_id := null;
 
   perform pg_advisory_xact_lock(hashtextextended(new.author_id::text, 0));
   select count(*) into recent_count
@@ -91,6 +121,7 @@ declare
   subject_id text;
   topic_id text;
   reviewed_status text;
+  created_paragraph_id text;
   reviewed_time timestamptz := now();
 begin
   if not (select public.is_library_admin()) then
@@ -142,8 +173,11 @@ begin
     where lower(btrim(value->>'name')) = lower(btrim(submission.topic_name))
     limit 1;
 
+    created_paragraph_id := gen_random_uuid()::text;
     paragraph_data := jsonb_build_object(
-      'id', gen_random_uuid()::text,
+      'id', created_paragraph_id,
+      'ownerId', submission.author_id,
+      'createdAt', reviewed_time,
       'name', btrim(submission.title),
       'summary', btrim(submission.summary),
       'content', btrim(submission.content),
@@ -187,7 +221,10 @@ begin
   end if;
 
   update public.library_submissions
-  set status = reviewed_status, reviewer_id = (select auth.uid()), reviewed_at = reviewed_time
+  set status = reviewed_status,
+      reviewer_id = (select auth.uid()),
+      reviewed_at = reviewed_time,
+      published_paragraph_id = case when p_approve then created_paragraph_id else null end
   where id = p_submission_id;
 
   return jsonb_build_object('id', p_submission_id, 'status', reviewed_status);
