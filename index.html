@@ -44,6 +44,16 @@
       <div class="notification-actions"><button id="commentNotificationGo" type="button" class="button button-primary">Перейти до коментаря</button><button id="commentNotificationLater" type="button" class="button button-quiet">Пізніше</button></div>
     </div>
   </dialog>
+  <dialog id="donatePleaseDialog" class="donate-please-dialog" aria-labelledby="donatePleaseHeadline">
+    <div class="donate-please-content">
+      <div class="donate-elephants" aria-hidden="true"><span>🐘</span><span>🐘</span><span>🐘</span></div>
+      <p class="eyebrow">МАЛЕНЬКЕ ПРОХАННЯ</p>
+      <h2 id="donatePleaseHeadline">Задонатьте, будь ласка 🥺</h2>
+      <p class="donate-please-copy">Якщо тобі подобається «Зошит», підтримай його на Donatello 💗</p>
+      <a class="button button-donate donate-please-link" id="donatePleaseLink" href="https://donatello.to/" target="_blank" rel="noopener noreferrer">♡ Задонатити на Donatello</a>
+      <button class="button button-quiet donate-dismiss" id="donatePleaseClose" type="button">Закрити (1/5)</button>
+    </div>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>

@@ -74,6 +74,27 @@ if (donatelloPageUrl && donateButton) {
   donateButton.href = donatelloPageUrl;
   donateButton.hidden = false;
 }
+const donatePleaseMessages = [
+  'Ну будь ласочка 🥺💗',
+  'Навіть маленька підтримка дуже потішить! 🐘',
+  'Допоможи «Зошиту» ставати кращим 💖',
+  'Останнє «ну будь ласочка» — і відпускаю 😭'
+];
+let donatePleaseDismissals = 0;
+function dismissDonatePlease() {
+  donatePleaseDismissals++;
+  if (donatePleaseDismissals >= 5) {
+    $('#donatePleaseDialog')?.close();
+    if (currentUser) {
+      commentNotificationCheckedUserId = null;
+      checkForCommentNotifications();
+    }
+    return;
+  }
+  $('#donatePleaseHeadline').textContent = donatePleaseMessages[donatePleaseDismissals - 1];
+  $('#donatePleaseClose').textContent = `Закрити (${donatePleaseDismissals + 1}/5)`;
+}
+if (donatelloPageUrl) $('#donatePleaseLink').href = donatelloPageUrl;
 
 function loadData() {
   try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : structuredClone(starter); }
@@ -1090,6 +1111,8 @@ $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionI
 $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
 $('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
 $('#commentNotificationGo')?.addEventListener('click',openNotifiedComment);$('#commentNotificationLater')?.addEventListener('click',()=>$('#commentNotificationDialog')?.close());$('#commentNotificationDialog')?.addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
+$('#donatePleaseClose').addEventListener('click',dismissDonatePlease);$('#donatePleaseDialog').addEventListener('cancel',e=>{e.preventDefault();dismissDonatePlease();});$('#donatePleaseDialog').addEventListener('click',e=>{if(e.target===$('#donatePleaseDialog'))dismissDonatePlease();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
+if (donatelloPageUrl) $('#donatePleaseDialog').showModal();
