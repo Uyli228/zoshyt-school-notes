@@ -33,6 +33,12 @@ let data = loadData();
 let readerPrefs = loadReaderPrefs();
 const cloudConfig = window.ZOSHIT_SUPABASE_CONFIG || {};
 const cloudConfigured = Boolean(cloudConfig.url && cloudConfig.anonKey && window.supabase?.createClient);
+const donatelloPageUrl = (() => {
+  try {
+    const url = new URL(window.ZOSHIT_DONATELLO_URL || '');
+    return ['donatello.to', 'www.donatello.to'].includes(url.hostname) && url.pathname !== '/' ? url.href : '';
+  } catch { return ''; }
+})();
 let cloudClient = null;
 let cloudReady = false;
 let isAdmin = false;
@@ -63,6 +69,11 @@ let pendingCommentScrollId = null;
 let toastTimer;
 const $ = (selector) => document.querySelector(selector);
 const view = $('#view');
+const donateButton = $('#donateButton');
+if (donatelloPageUrl && donateButton) {
+  donateButton.href = donatelloPageUrl;
+  donateButton.hidden = false;
+}
 
 function loadData() {
   try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : structuredClone(starter); }

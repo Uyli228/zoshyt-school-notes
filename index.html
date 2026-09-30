@@ -21,7 +21,7 @@
       <div class="sidebar-bottom"><div class="storage-note" id="storageNote"><span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton" hidden>↙ &nbsp;Імпорт копії</button><button class="text-button" id="csvImportButton" hidden>▤ &nbsp;Імпорт таблиці</button></div>
     </aside>
     <main class="main-area">
-      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Спільна бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему, параграф або тег…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><button class="button button-quiet" id="reportsButton" type="button" hidden>Повідомлення</button><button class="button button-primary" id="submitNotesButton" type="button">Запропонувати конспект</button><button class="button button-quiet account-button" id="accountButton" type="button">Увійти</button></header>
+      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Спільна бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему, параграф або тег…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><a class="button button-donate" id="donateButton" href="https://donatello.to/" target="_blank" rel="noopener noreferrer" hidden>♡ Підтримати</a><button class="button button-quiet" id="reportsButton" type="button" hidden>Повідомлення</button><button class="button button-primary" id="submitNotesButton" type="button">Запропонувати конспект</button><button class="button button-quiet account-button" id="accountButton" type="button">Увійти</button></header>
       <div id="systemBanner" class="system-banner" hidden></div>
       <section id="view" class="view" aria-live="polite"></section>
     </main>
@@ -48,6 +48,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="supabase-config.js"></script>
+  <script src="donatello-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
