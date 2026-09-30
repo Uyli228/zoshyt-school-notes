@@ -33,10 +33,12 @@ let data = loadData();
 let readerPrefs = loadReaderPrefs();
 const cloudConfig = window.ZOSHIT_SUPABASE_CONFIG || {};
 const cloudConfigured = Boolean(cloudConfig.url && cloudConfig.anonKey && window.supabase?.createClient);
-const donatelloPageUrl = (() => {
+const supportPageUrl = (() => {
   try {
-    const url = new URL(window.ZOSHIT_DONATELLO_URL || '');
-    return ['donatello.to', 'www.donatello.to'].includes(url.hostname) && url.pathname !== '/' ? url.href : '';
+    const url = new URL(window.ZOSHIT_SUPPORT_URL || '');
+    const isDonatello = ['donatello.to', 'www.donatello.to'].includes(url.hostname) && url.pathname !== '/';
+    const isPrivat24 = ['privat24.ua', 'www.privat24.ua'].includes(url.hostname) && url.pathname.startsWith('/send/');
+    return url.protocol === 'https:' && (isDonatello || isPrivat24) ? url.href : '';
   } catch { return ''; }
 })();
 let cloudClient = null;
@@ -70,8 +72,8 @@ let toastTimer;
 const $ = (selector) => document.querySelector(selector);
 const view = $('#view');
 const donateButton = $('#donateButton');
-if (donatelloPageUrl && donateButton) {
-  donateButton.href = donatelloPageUrl;
+if (supportPageUrl && donateButton) {
+  donateButton.href = supportPageUrl;
   donateButton.hidden = false;
 }
 const donatePleaseMessages = [
@@ -94,7 +96,7 @@ function dismissDonatePlease() {
   $('#donatePleaseHeadline').textContent = donatePleaseMessages[donatePleaseDismissals - 1];
   $('#donatePleaseClose').textContent = `Закрити (${donatePleaseDismissals + 1}/5)`;
 }
-if (donatelloPageUrl) $('#donatePleaseLink').href = donatelloPageUrl;
+if (supportPageUrl) $('#donatePleaseLink').href = supportPageUrl;
 
 function loadData() {
   try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : structuredClone(starter); }
@@ -1115,4 +1117,4 @@ $('#donatePleaseClose').addEventListener('click',dismissDonatePlease);$('#donate
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
-if (donatelloPageUrl) $('#donatePleaseDialog').showModal();
+if (supportPageUrl) $('#donatePleaseDialog').showModal();
