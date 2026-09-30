@@ -1,1 +1,13 @@
 supabase/.temp/
+
+# Локальні секрети й ключі ніколи не додавай до публічного репозиторію.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*service_role*
+service-account*.json
+credentials*.json
