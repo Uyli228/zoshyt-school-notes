@@ -20,3 +20,5 @@ body.elephant-mode{background:#ffe8f3}body.elephant-mode .app-shell{background:l
 @media(max-width:700px){.study-tool-fields{padding-left:6px}.study-tool-option{padding:9px}}
 .submission-study-preview pre{max-height:360px;overflow:auto;padding:12px;border-radius:8px;background:#fff;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.submission-study-preview h3{margin:13px 0 7px;font-size:13px}
 .note-prompt-box{margin:15px 0;padding:16px;border:2px solid #d2ccff;border-radius:13px;background:#f8f7ff}.note-prompt-box h3{margin:0;color:var(--purple-dark);font-size:16px}.note-prompt-box>.auth-copy{margin:10px 0}.note-prompt-button{display:block;width:100%;min-height:58px;margin:13px 0;font-size:17px;letter-spacing:.04em}.note-prompt-box textarea[readonly]{min-height:150px;background:#fff;font-size:12px;line-height:1.55}.note-prompt-status{display:block;color:var(--purple-dark);line-height:1.5}
+
+.retelling-prompt-box{border-color:#f2c4d8;background:#fff7fa}.retelling-prompt-box h3,.retelling-prompt-box .note-prompt-status{color:#a63868}
