@@ -2,6 +2,8 @@ const STORAGE_KEY = 'tetrad-library-v1';
 const PREFS_KEY = 'zoshit-reader-preferences-v1';
 const QUIZZES_KEY = 'zoshit-personal-quizzes-v1';
 const FLASHCARDS_KEY = 'zoshit-personal-flashcards-v1';
+const SHARED_CACHE_KEY = 'zoshit-shared-library-cache-v1';
+const CARD_PROGRESS_KEY = 'zoshit-card-progress-v1';
 const COMMENT_NOTIFICATIONS_KEY = 'zoshit-comment-notifications-v1';
 const colors = [
   { color: '#7969dd', tint: '#f0edff' }, { color: '#42a997', tint: '#e9f7f4' },
@@ -61,6 +63,9 @@ let quizAnswers = [];
 let activeFlashcardId = null;
 let flashcardIndex = 0;
 let flashcardShowingBack = false;
+let flashcardReviewMode = false;
+let cardProgress = loadPersonalStore(CARD_PROGRESS_KEY);
+const CARD_INTERVAL_DAYS = [0, 1, 2, 4, 8, 16];
 let activeFlashcardDeck = [];
 let cloudError = '';
 let current = { subjectId: null, topicId: null, paragraphId: null };
@@ -77,25 +82,21 @@ if (supportPageUrl && donateButton) {
   donateButton.href = supportPageUrl;
   donateButton.hidden = false;
 }
-const donatePleaseMessages = [
-  'Ну будь ласочка 🥺💗',
-  'Навіть маленька підтримка дуже потішить! 🐘',
-  'Допоможи «Зошиту» ставати кращим 💖',
-  'Останнє «ну будь ласочка» — і відпускаю 😭'
-];
-let donatePleaseDismissals = 0;
+const DONATE_SHOWN_KEY = 'zoshit-donate-shown-at';
 function dismissDonatePlease() {
-  donatePleaseDismissals++;
-  if (donatePleaseDismissals >= 5) {
-    $('#donatePleaseDialog')?.close();
-    if (currentUser) {
-      commentNotificationCheckedUserId = null;
-      checkForCommentNotifications();
-    }
-    return;
+  $('#donatePleaseDialog')?.close();
+  if (currentUser) {
+    commentNotificationCheckedUserId = null;
+    checkForCommentNotifications();
   }
-  $('#donatePleaseHeadline').textContent = donatePleaseMessages[donatePleaseDismissals - 1];
-  $('#donatePleaseClose').textContent = `Закрити (${donatePleaseDismissals + 1}/5)`;
+}
+function shouldShowDonatePlease() {
+  try {
+    const last = Number(localStorage.getItem(DONATE_SHOWN_KEY) || 0);
+    if (Date.now() - last < 3 * 86400000) return false;
+    localStorage.setItem(DONATE_SHOWN_KEY, String(Date.now()));
+  } catch { /* Без сховища показуємо як раніше. */ }
+  return true;
 }
 if (supportPageUrl) $('#donatePleaseLink').href = supportPageUrl;
 
@@ -130,7 +131,52 @@ function findParagraph(paragraphId) {
   }
   return null;
 }
+function trackParagraphView(paragraphId) {
+  if (!cloudReady || !cloudClient) return;
+  try {
+    const seen = JSON.parse(sessionStorage.getItem('zoshit-viewed') || '[]');
+    if (seen.includes(paragraphId)) return;
+    sessionStorage.setItem('zoshit-viewed', JSON.stringify([...seen, paragraphId].slice(-300)));
+  } catch { /* Рахуємо навіть без sessionStorage. */ }
+  cloudClient.rpc('record_paragraph_view', { p_paragraph_id: paragraphId }).then(() => {}, () => {});
+}
+async function renderStatsScreen() {
+  setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: 'Статистика' }]);
+  view.innerHTML = '<div class="page-heading"><div><span class="eyebrow">ДЛЯ АДМІНІСТРАТОРА</span><h1>Статистика</h1><p>Завантажую…</p></div></div>';
+  if (!cloudReady || !isAdmin) { view.querySelector('p').textContent = 'Статистика доступна лише адміністратору.'; return; }
+  const since = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const { data: rows, error } = await cloudClient.from('paragraph_view_days').select('paragraph_id,day,views').gte('day', since).limit(20000);
+  if (activeScreen !== 'stats') return;
+  if (error) { view.querySelector('p').innerHTML = 'Статистику ще не ввімкнено. Виконай <code>supabase/stats.sql</code> у Supabase → SQL Editor.'; console.error(error); return; }
+  const weekStart = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const byParagraph = new Map(), bySubject = new Map(), byDay = new Map();
+  let total = 0, week = 0;
+  for (const row of rows) {
+    const views = Number(row.views) || 0;
+    total += views; if (row.day >= weekStart) week += views;
+    byDay.set(row.day, (byDay.get(row.day) || 0) + views);
+    const entry = byParagraph.get(row.paragraph_id) || { month: 0, week: 0 };
+    entry.month += views; if (row.day >= weekStart) entry.week += views;
+    byParagraph.set(row.paragraph_id, entry);
+    const found = findParagraph(row.paragraph_id);
+    if (found) bySubject.set(found.sub.id, (bySubject.get(found.sub.id) || 0) + views);
+  }
+  const top = [...byParagraph.entries()].map(([id, stat]) => ({ id, ...stat, found: findParagraph(id) })).filter((item) => item.found).sort((a, b) => b.month - a.month).slice(0, 25);
+  const subjects = data.map((sub) => ({ sub, views: bySubject.get(sub.id) || 0 })).sort((a, b) => b.views - a.views);
+  const maxSubject = Math.max(1, ...subjects.map((item) => item.views));
+  const days = Array.from({ length: 30 }, (_, i) => { const day = new Date(Date.now() - (29 - i) * 86400000).toISOString().slice(0, 10); return { day, views: byDay.get(day) || 0 }; });
+  const maxDay = Math.max(1, ...days.map((item) => item.views));
+  const unseen = data.flatMap((sub) => sub.topics.flatMap((t) => t.paragraphs.map((p) => ({ sub, t, p })))).filter(({ p }) => !byParagraph.has(p.id));
+  view.innerHTML = `<div class="page-heading"><div><span class="eyebrow">ДЛЯ АДМІНІСТРАТОРА</span><h1>Статистика</h1><p>Перегляди параграфів за останні 30 днів. Один читач рахується один раз за сеанс.</p></div></div>
+    <div class="overview-grid"><div class="stat-card"><span class="stat-icon">👀</span><div><div class="stat-number">${total}</div><div class="stat-label">переглядів за 30 днів</div></div></div><div class="stat-card"><span class="stat-icon">📅</span><div><div class="stat-number">${week}</div><div class="stat-label">за 7 днів</div></div></div><div class="stat-card"><span class="stat-icon">📄</span><div><div class="stat-number">${byParagraph.size}</div><div class="stat-label">параграфів відкривали</div></div></div></div>
+    <section class="stats-panel"><h2>По днях</h2><div class="day-chart">${days.map((item) => `<span title="${new Date(item.day).toLocaleDateString('uk-UA')}: ${item.views}" style="height:${Math.max(2, item.views / maxDay * 100)}%"></span>`).join('')}</div></section>
+    <section class="stats-panel"><h2>Популярні предмети</h2>${subjects.map(({ sub, views }) => `<div class="bar-row"><span>${esc(sub.icon || '📚')} ${esc(sub.name)}</span><div class="bar"><i style="width:${views / maxSubject * 100}%"></i></div><b>${views}</b></div>`).join('') || '<p class="auth-copy">Поки немає даних.</p>'}</section>
+    <section class="stats-panel"><h2>Найпопулярніші параграфи</h2>${top.length ? `<table class="stats-table"><thead><tr><th>Параграф</th><th>7 днів</th><th>30 днів</th></tr></thead><tbody>${top.map((item) => `<tr data-stats-open="${esc(item.id)}"><td><strong>${esc(item.found.paragraph.name)}</strong><small>${esc(item.found.sub.name)} › ${esc(item.found.top.name)}</small></td><td>${item.week}</td><td>${item.month}</td></tr>`).join('')}</tbody></table>` : '<p class="auth-copy">Поки ніхто нічого не відкривав.</p>'}</section>
+    ${unseen.length ? `<section class="stats-panel"><h2>Ще ніхто не відкривав · ${unseen.length}</h2><p class="auth-copy">${unseen.slice(0, 30).map(({ sub, p }) => `${esc(sub.name)} › ${esc(p.name)}`).join(' · ')}${unseen.length > 30 ? ' …' : ''}</p></section>` : ''}`;
+  view.querySelectorAll('[data-stats-open]').forEach((row) => row.addEventListener('click', () => { const found = findParagraph(row.dataset.statsOpen); if (found) { activeScreen = 'library'; openParagraph(found.sub, found.top, found.paragraph); } }));
+}
 function openParagraph(sub, top, p) {
+  trackParagraphView(p.id);
   clearSharedParagraphUrl();
   current = { subjectId: sub.id, topicId: top.id, paragraphId: p.id };
   readerPrefs.recent = [p.id, ...readerPrefs.recent.filter((id) => id !== p.id)].slice(0, 12);
@@ -395,6 +441,7 @@ function renderAccessState() {
   $('#importButton').hidden = !canManage();
   $('#csvImportButton').hidden = !canManage();
   $('#reportsButton').hidden = !(cloudReady && isAdmin);
+  $('#statsButton').hidden = !(cloudReady && isAdmin);
   const note = $('#storageNote');
   note.innerHTML = cloudConfigured
     ? '<span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span>'
@@ -433,6 +480,10 @@ async function loadSharedLibrary() {
   sharedRevision = Number(row.revision);
   cloudReady = true;
   cloudError = '';
+  try { localStorage.setItem(SHARED_CACHE_KEY, JSON.stringify({ data: row.data, savedAt: Date.now() })); } catch { /* Офлайн-копія не обов’язкова. */ }
+}
+function loadCachedSharedLibrary() {
+  try { const cached = JSON.parse(localStorage.getItem(SHARED_CACHE_KEY) || 'null'); return Array.isArray(cached?.data) ? cached : null; } catch { return null; }
 }
 async function updateAdminRole(user, announce = false) {
   currentUser = user || null;
@@ -581,8 +632,15 @@ async function initializeApp() {
   } catch (error) {
     console.error(error);
     cloudReady = false;
-    cloudError = 'Спільна бібліотека ще не налаштована або недоступна. Перевір проєкт Supabase та виконай supabase/schema.sql.';
-    data = [];
+    const cached = loadCachedSharedLibrary();
+    if (cached) {
+      data = cached.data;
+      cloudError = `📴 Немає зв’язку з сервером. Показано збережену копію бібліотеки від ${new Date(cached.savedAt).toLocaleString('uk-UA')}.`;
+      openSharedParagraphFromUrl();
+    } else {
+      cloudError = navigator.onLine === false ? '📴 Немає інтернету, а збереженої копії бібліотеки на цьому пристрої ще немає.' : 'Спільна бібліотека ще не налаштована або недоступна. Перевір проєкт Supabase та виконай supabase/schema.sql.';
+      data = [];
+    }
     renderAccessState();
     render();
   }
@@ -850,6 +908,94 @@ async function importCsvRows() {
   $('#csvImportDialog').close(); activeScreen = 'library'; current = { subjectId: null, topicId: null, paragraphId: null }; render();
   notify(`Додано ${added}, пропущено дублікатів: ${skipped}.`);
 }
+let katexPromise = null;
+function loadKatex() {
+  if (window.katex) return Promise.resolve(window.katex);
+  katexPromise ||= new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet'; link.href = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
+    document.head.appendChild(link);
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js';
+    script.onload = () => resolve(window.katex);
+    script.onerror = () => { katexPromise = null; reject(new Error('KaTeX не завантажився')); };
+    document.head.appendChild(script);
+  });
+  return katexPromise;
+}
+function renderInlineMarkdown(text) {
+  return text
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/(^|[^_\p{L}\d])_([^_\n]+)_(?![\p{L}\d])/gu, '$1<em>$2</em>')
+    .replace(/==([^=]+)==/g, '<mark>$1</mark>');
+}
+function renderRichText(source = '') {
+  const maths = [];
+  const keep = (tex, display) => { maths.push({ tex, display }); return `\u0000M${maths.length - 1}\u0000`; };
+  let text = String(source).replace(/\r\n?/g, '\n')
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => keep(tex, true))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => keep(tex, true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => keep(tex, false))
+    .replace(/(^|[^\\$\d])\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\d)/g, (_, before, tex) => before + keep(tex, false));
+  const lines = esc(text).split('\n');
+  const out = [];
+  let list = null, paragraph = [];
+  const flushParagraph = () => { if (paragraph.length) { out.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br>')}</p>`); paragraph = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const heading = line.match(/^\s*(#{1,4})\s+(.+)$/);
+    const bullet = line.match(/^\s*[-*•]\s+(.+)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    const quote = line.match(/^\s*&gt;\s?(.*)$/);
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[index + 1] || '')) {
+      flushParagraph(); closeList();
+      const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map((cell) => renderInlineMarkdown(cell.trim()));
+      const head = cells(line); index++;
+      const body = [];
+      while (/^\s*\|.*\|\s*$/.test(lines[index + 1] || '')) body.push(cells(lines[++index]));
+      out.push(`<div class="rich-table"><table><thead><tr>${head.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead><tbody>${body.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+    } else if (heading) { flushParagraph(); closeList(); const level = Math.min(4, heading[1].length + 2); out.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`); }
+    else if (bullet || numbered) {
+      flushParagraph();
+      const kind = bullet ? 'ul' : 'ol';
+      if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; }
+      out.push(`<li>${renderInlineMarkdown((bullet || numbered)[1])}</li>`);
+    } else if (quote) { flushParagraph(); closeList(); out.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`); }
+    else if (/^\s*(---|\*\*\*)\s*$/.test(line)) { flushParagraph(); closeList(); out.push('<hr>'); }
+    else if (!line.trim()) { flushParagraph(); closeList(); }
+    else { closeList(); paragraph.push(line); }
+  }
+  flushParagraph(); closeList();
+  return out.join('').replace(/\u0000M(\d+)\u0000/g, (_, n) => { const item = maths[Number(n)]; return `<span class="math${item.display ? ' math-display' : ''}" data-tex="${esc(item.tex.trim())}">${esc(item.display ? item.tex : item.tex)}</span>`; });
+}
+async function typesetMath(root = view) {
+  const nodes = [...root.querySelectorAll('.math[data-tex]:not([data-rendered])')];
+  if (!nodes.length) return;
+  try {
+    const katex = await loadKatex();
+    nodes.forEach((node) => {
+      try { katex.render(node.dataset.tex, node, { displayMode: node.classList.contains('math-display'), throwOnError: false, strict: 'ignore' }); node.dataset.rendered = '1'; }
+      catch { /* Залишаємо текст формули як є. */ }
+    });
+  } catch { /* Без мережі формули лишаються текстом. */ }
+}
+function readProgress(paragraphs) { const total = paragraphs.length; const done = paragraphs.filter((item) => readerPrefs.read[item.id]).length; return { total, done, percent: total ? Math.round(done / total * 100) : 0 }; }
+function progressBar(progress, label = true) { return `<div class="progress-line" title="Прочитано ${progress.done} з ${progress.total}"><div class="progress-track"><span style="width:${progress.percent}%"></span></div>${label ? `<small>${progress.done === progress.total && progress.total ? '✓ Усе прочитано' : `Прочитано ${progress.done} з ${progress.total}`}</small>` : ''}</div>`; }
+function allParagraphs(sub) { return sub.topics.flatMap((top) => top.paragraphs); }
+function shuffle(items) { const copy = [...items]; for (let i = copy.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [copy[i], copy[j]] = [copy[j], copy[i]]; } return copy; }
+function collectQuestions(paragraphs) { return paragraphs.flatMap((item) => (item.quiz?.questions || []).map((question) => ({ ...question, source: item.name }))); }
+function startCombinedQuiz(title, paragraphs, limit) {
+  const questions = shuffle(collectQuestions(paragraphs)).slice(0, limit);
+  if (!questions.length) { notify('У цих параграфах ще немає квізів.'); return; }
+  quizReturn = { ...current };
+  beginQuiz({ title, questions });
+}
+let quizReturn = null;
+let topicView = { sort: 'order', filter: 'all', tag: '', selecting: false, selected: new Set() };
 function counts(sub) { return { topics: sub.topics.length, paragraphs: sub.topics.reduce((sum, item) => sum + item.paragraphs.length, 0) }; }
 function renderNav() {
   $('#addSubject').hidden = !canManage();
@@ -869,7 +1015,7 @@ function setBreadcrumbs(items) {
     render();
   }));
 }
-function render() { renderNav(); if (activeScreen === 'submissions') return renderSubmissionQueue(); if (activeScreen === 'reports') return renderReportQueue(); if (activeScreen === 'quiz') return renderQuizScreen(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
+function render() { renderNav(); if (activeScreen === 'stats') return renderStatsScreen(); if (activeScreen === 'submissions') return renderSubmissionQueue(); if (activeScreen === 'reports') return renderReportQueue(); if (activeScreen === 'quiz') return renderQuizScreen(); if (!current.subjectId) return renderHome(); const sub = subject(current.subjectId); if (!sub) { current = { subjectId: null, topicId: null, paragraphId: null }; return render(); } if (!current.topicId) return renderSubject(sub); const top = topic(sub, current.topicId); if (!top) { current.topicId = null; return render(); } if (!current.paragraphId) return renderTopic(sub, top); const para = paragraph(top, current.paragraphId); if (!para) { current.paragraphId = null; return render(); } renderParagraph(sub, top, para); }
 function renderPersonalLists() {
   const list = (title, ids, icon) => {
     const entries = ids.map((id) => findParagraph(id)).filter(Boolean);
@@ -884,12 +1030,13 @@ function renderHome() {
   setBreadcrumbs([{ label: 'Спільна бібліотека' }]);
   const totalTopics = data.reduce((sum, sub) => sum + sub.topics.length, 0);
   const totalParas = data.reduce((sum, sub) => sum + counts(sub).paragraphs, 0);
-  view.innerHTML = `<div class="welcome-row"><div><span class="eyebrow">ТВОЄ МІСЦЕ ДЛЯ ЗНАНЬ</span><h1>Усе важливе — поруч</h1><p>Спільна бібліотека для повторення матеріалів з усіх предметів.</p></div>${canManage()?'<button class="button button-primary" id="homeAddSubject">＋ &nbsp;Додати предмет</button>':''}</div>
+  view.innerHTML = `<div class="welcome-row"><div><span class="eyebrow">ТВОЄ МІСЦЕ ДЛЯ ЗНАНЬ</span><h1>Усе важливе — поруч</h1><p>Спільна бібліотека для повторення матеріалів з усіх предметів.</p></div><div class="heading-actions">${dueCardsIn(data.flatMap(allParagraphs)).length ? `<button class="button button-quiet" id="homeCards">🃏 Повторити картки (${dueCardsIn(data.flatMap(allParagraphs)).length})</button>` : ''}${canManage()?'<button class="button button-primary" id="homeAddSubject">＋ &nbsp;Додати предмет</button>':''}</div></div>
     <div class="overview-grid"><div class="stat-card"><span class="stat-icon">📚</span><div><div class="stat-number">${data.length}</div><div class="stat-label">предметів</div></div></div><div class="stat-card"><span class="stat-icon">🗂️</span><div><div class="stat-number">${totalTopics}</div><div class="stat-label">тем</div></div></div><div class="stat-card"><span class="stat-icon">✍️</span><div><div class="stat-number">${totalParas}</div><div class="stat-label">параграфів</div></div></div></div>
     <div class="section-title"><h2>Предмети</h2><span>${data.length ? 'Обери, що повторити' : 'Почни з першого предмета'}</span></div>
-    ${data.length ? `<div class="subject-grid">${data.map((sub) => { const c = counts(sub); return `<article class="subject-card" data-open-subject="${esc(sub.id)}" style="--card-color:${esc(sub.color)};--card-tint:${esc(sub.tint)}"><div class="card-band"></div><div class="subject-card-body"><div class="card-top"><span class="card-emoji">${esc(sub.icon || '📚')}</span>${canManage()?`<button class="more-button" data-edit-subject="${esc(sub.id)}" aria-label="Налаштувати предмет ${esc(sub.name)}">···</button>`:''}</div><h3>${esc(sub.name)}</h3><div class="card-meta">${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')}</div><div class="subject-card-foot"><span>${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</span><b>Відкрити →</b></div></div></article>`; }).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">📖</div><h3>${canManage()?'Спільна бібліотека поки порожня':'У бібліотеці поки немає предметів'}</h3><p>${canManage()?'Додай предмет або перенеси матеріали, збережені раніше в цьому браузері.':'Адміністратор ще не додав навчальні матеріали.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddSubject">＋ Додати предмет</button>':''}</div>`}`;
+    ${data.length ? `<div class="subject-grid">${data.map((sub) => { const c = counts(sub); return `<article class="subject-card" data-open-subject="${esc(sub.id)}" style="--card-color:${esc(sub.color)};--card-tint:${esc(sub.tint)}"><div class="card-band"></div><div class="subject-card-body"><div class="card-top"><span class="card-emoji">${esc(sub.icon || '📚')}</span>${canManage()?`<button class="more-button" data-edit-subject="${esc(sub.id)}" aria-label="Налаштувати предмет ${esc(sub.name)}">···</button>`:''}</div><h3>${esc(sub.name)}</h3><div class="card-meta">${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')}</div>${c.paragraphs ? progressBar(readProgress(allParagraphs(sub))) : ''}<div class="subject-card-foot"><span>${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</span><b>Відкрити →</b></div></div></article>`; }).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">📖</div><h3>${canManage()?'Спільна бібліотека поки порожня':'У бібліотеці поки немає предметів'}</h3><p>${canManage()?'Додай предмет або перенеси матеріали, збережені раніше в цьому браузері.':'Адміністратор ще не додав навчальні матеріали.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddSubject">＋ Додати предмет</button>':''}</div>`}`;
   view.insertAdjacentHTML('beforeend', renderPersonalLists());
   $('#homeAddSubject')?.addEventListener('click', () => openEditor('subject'));
+  $('#homeCards')?.addEventListener('click', () => startCardReview('Повторення карток', data.flatMap(allParagraphs)));
   $('#emptyAddSubject')?.addEventListener('click', () => openEditor('subject'));
   view.querySelectorAll('[data-open-subject]').forEach((el) => el.addEventListener('click', () => { current = { subjectId: el.dataset.openSubject, topicId: null, paragraphId: null }; render(); }));
   view.querySelectorAll('[data-edit-subject]').forEach((el) => el.addEventListener('click', (event) => { event.stopPropagation(); openEditor('subject', el.dataset.editSubject); }));
@@ -1007,9 +1154,11 @@ async function submitSuggestion(event) {
 }
 function renderSubject(sub) {
   setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name }]); const c = counts(sub);
-  view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p></div></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button></div>':''}</div>
+  view.innerHTML = `<div class="page-heading"><div class="page-icon"><span class="large-subject-icon" style="--tint:${esc(sub.tint)}">${esc(sub.icon || '📚')}</span><div><span class="eyebrow">ПРЕДМЕТ</span><h1>${esc(sub.name)}</h1><p>${c.topics} ${plural(c.topics, 'тема', 'теми', 'тем')} · ${c.paragraphs} ${plural(c.paragraphs, 'параграф', 'параграфи', 'параграфів')}</p>${c.paragraphs ? progressBar(readProgress(allParagraphs(sub))) : ''}</div></div><div class="heading-actions">${collectQuestions(allParagraphs(sub)).length ? `<button class="button button-quiet" id="subjectTest">🧩 Тест з предмета</button>` : ''}${dueCardsIn(allParagraphs(sub)).length ? `<button class="button button-quiet" id="subjectCards">🃏 Картки (${dueCardsIn(allParagraphs(sub)).length})</button>` : ''}${canManage()?'<button class="button button-quiet" id="editSubject">Налаштувати</button><button class="button button-primary" id="addTopic">＋ Додати тему</button>':''}</div></div>
     <div class="section-title"><h2>Теми</h2><span>Обери тему, щоб переглянути параграфи</span></div>
-    ${sub.topics.length ? `<div class="topic-list">${sub.topics.map((top, i) => `<article class="topic-card" data-open-topic="${esc(top.id)}"><div class="topic-card-row"><span class="topic-index">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(top.name)}</h3><p>${esc(top.description || 'Натисни, щоб переглянути матеріали')}</p></div>${canManage()?`<button class="more-button" data-edit-topic="${esc(top.id)}" aria-label="Налаштувати тему">···</button>`:''}<span class="topic-arrow">›</span></div><div class="topic-card-foot">${top.paragraphs.length} ${plural(top.paragraphs.length, 'параграф', 'параграфи', 'параграфів')}</div></article>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🗂️</div><h3>У цьому предметі ще немає тем</h3><p>${canManage()?'Розділи предмет на теми, щоб матеріали було легше знаходити.':'Адміністратор ще не додав теми до цього предмета.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddTopic">＋ Додати тему</button>':''}</div>`}`;
+    ${sub.topics.length ? `<div class="topic-list">${sub.topics.map((top, i) => `<article class="topic-card" data-open-topic="${esc(top.id)}"><div class="topic-card-row"><span class="topic-index">${String(i+1).padStart(2,'0')}</span><div><h3>${esc(top.name)}</h3><p>${esc(top.description || 'Натисни, щоб переглянути матеріали')}</p></div>${canManage()?`<button class="more-button" data-edit-topic="${esc(top.id)}" aria-label="Налаштувати тему">···</button>`:''}<span class="topic-arrow">›</span></div><div class="topic-card-foot"><span>${top.paragraphs.length} ${plural(top.paragraphs.length, 'параграф', 'параграфи', 'параграфів')}</span>${top.paragraphs.length ? progressBar(readProgress(top.paragraphs)) : ''}</div></article>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🗂️</div><h3>У цьому предметі ще немає тем</h3><p>${canManage()?'Розділи предмет на теми, щоб матеріали було легше знаходити.':'Адміністратор ще не додав теми до цього предмета.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddTopic">＋ Додати тему</button>':''}</div>`}`;
+  $('#subjectTest')?.addEventListener('click',()=>startCombinedQuiz(`Тест: ${sub.name}`, allParagraphs(sub), 25));
+  $('#subjectCards')?.addEventListener('click',()=>startCardReview(`Картки: ${sub.name}`, allParagraphs(sub)));
   $('#editSubject')?.addEventListener('click',()=>openEditor('subject',sub.id));
   $('#addTopic')?.addEventListener('click',()=>openEditor('topic'));
   $('#emptyAddTopic')?.addEventListener('click',()=>openEditor('topic'));
@@ -1018,10 +1167,58 @@ function renderSubject(sub) {
 }
 function renderTopic(sub, top) {
   setBreadcrumbs([{ label:'Спільна бібліотека',action:'home' },{ label:sub.name,action:'subject' },{ label:top.name }]);
-  view.innerHTML=`<button class="back-link" id="backToSubject">← &nbsp;Усі теми: ${esc(sub.name)}</button><div class="page-heading"><div><span class="eyebrow">ТЕМА</span><h1>${esc(top.name)}</h1><p>${esc(top.description || 'Матеріали для повторення')}</p></div>${canManage()?'<div class="heading-actions"><button class="button button-quiet" id="editTopic">Налаштувати</button><button class="button button-primary" id="addParagraph">＋ Додати параграф</button></div>':''}</div>
-  ${top.paragraphs.length?`<div class="paragraph-layout"><div class="paragraph-list">${top.paragraphs.map((p,i)=>`<article class="paragraph-row" data-open-paragraph="${esc(p.id)}"><span class="paragraph-no">${readerPrefs.read[p.id]?'✓':String(i+1).padStart(2,'0')}</span><div><h3>${esc(p.name)} ${readerPrefs.favorites.includes(p.id)?'<span class="row-favorite">★</span>':''}</h3><p>${esc(p.summary||'Відкрити матеріал')}</p>${Array.isArray(p.tags)&&p.tags.length?`<div class="tag-list">${p.tags.map((tag)=>`<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>`:''}</div>${p.image?'<span class="row-photo" title="Є зображення">▧</span>':''}<span class="topic-arrow">›</span></article>`).join('')}</div><aside class="study-tip"><strong>💡 Як повторювати</strong><p>Переглядай параграфи по одному та повертайся до них, коли потрібно освіжити знання.</p></aside></div>`:`<div class="empty-state"><div class="empty-icon">✍️</div><h3>${canManage()?'Додай перший параграф':'Параграфів поки немає'}</h3><p>${canManage()?'Запиши пояснення, корисні факти чи додай зображення.':'Адміністратор ще не додав матеріали до цієї теми.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddParagraph">＋ Додати параграф</button>':''}</div>`}`;
+  if (topicView.topicId !== top.id) topicView = { topicId: top.id, sort: 'order', filter: 'all', tag: '', selecting: false, selected: new Set() };
+  const allTags = [...new Set(top.paragraphs.flatMap((p) => Array.isArray(p.tags) ? p.tags : []))].sort((x, y) => x.localeCompare(y, 'uk'));
+  let items = top.paragraphs.map((p, index) => ({ p, index }));
+  if (topicView.filter === 'unread') items = items.filter(({ p }) => !readerPrefs.read[p.id]);
+  if (topicView.filter === 'favorites') items = items.filter(({ p }) => readerPrefs.favorites.includes(p.id));
+  if (topicView.tag) items = items.filter(({ p }) => (p.tags || []).includes(topicView.tag));
+  if (topicView.sort === 'newest') items.sort((x, y) => String(y.p.updatedAt || '').localeCompare(String(x.p.updatedAt || '')));
+  if (topicView.sort === 'name') items.sort((x, y) => x.p.name.localeCompare(y.p.name, 'uk', { numeric: true }));
+  const progress = readProgress(top.paragraphs);
+  const questions = collectQuestions(top.paragraphs).length;
+  const due = dueCardsIn(top.paragraphs).length;
+  const otherTopics = data.flatMap((s2) => s2.topics.filter((t2) => t2.id !== top.id).map((t2) => ({ s2, t2 })));
+  const toolbar = top.paragraphs.length ? `<div class="list-toolbar"><div class="chip-group" role="group" aria-label="Фільтр">${[['all','Усі'],['unread','Непрочитані'],['favorites','★ Обране']].map(([value,label])=>`<button class="chip ${topicView.filter===value?'active':''}" data-topic-filter="${value}">${label}</button>`).join('')}</div><div class="toolbar-selects">${allTags.length?`<select id="topicTagFilter" aria-label="Тег"><option value="">Усі теги</option>${allTags.map((tag)=>`<option value="${esc(tag)}" ${topicView.tag===tag?'selected':''}>#${esc(tag)}</option>`).join('')}</select>`:''}<select id="topicSort" aria-label="Сортування"><option value="order" ${topicView.sort==='order'?'selected':''}>За порядком</option><option value="newest" ${topicView.sort==='newest'?'selected':''}>Спочатку новіші</option><option value="name" ${topicView.sort==='name'?'selected':''}>За назвою</option></select>${canManage()?`<button class="button button-quiet" id="toggleSelect">${topicView.selecting?'Готово':'☑ Вибрати'}</button>`:''}</div></div>` : '';
+  const bulkBar = topicView.selecting ? `<div class="bulk-bar"><span>Вибрано: <b>${topicView.selected.size}</b></span><button class="text-button" id="selectAllParagraphs">Вибрати всі</button><select id="bulkMoveTarget"><option value="">Перенести в тему…</option>${otherTopics.map(({s2,t2})=>`<option value="${esc(s2.id)}|${esc(t2.id)}">${esc(s2.name)} › ${esc(t2.name)}</option>`).join('')}</select><button class="button button-quiet" id="bulkMove" ${topicView.selected.size?'':'disabled'}>Перенести</button><button class="button button-quiet danger-action" id="bulkDelete" ${topicView.selected.size?'':'disabled'}>Видалити</button></div>` : '';
+  view.innerHTML=`<button class="back-link" id="backToSubject">← &nbsp;Усі теми: ${esc(sub.name)}</button><div class="page-heading"><div><span class="eyebrow">ТЕМА</span><h1>${esc(top.name)}</h1><p>${esc(top.description || 'Матеріали для повторення')}</p>${progress.total ? progressBar(progress) : ''}</div><div class="heading-actions">${questions?`<button class="button button-quiet" id="topicTest">🧩 Тест з теми (${Math.min(questions,20)})</button>`:''}${due?`<button class="button button-quiet" id="topicCards">🃏 Картки (${due})</button>`:''}${canManage()?'<button class="button button-quiet" id="editTopic">Налаштувати</button><button class="button button-primary" id="addParagraph">＋ Додати параграф</button>':''}</div></div>
+  ${toolbar}${bulkBar}
+  ${top.paragraphs.length?`<div class="paragraph-layout"><div class="paragraph-list">${items.length?items.map(({p,index})=>`<article class="paragraph-row ${topicView.selecting&&topicView.selected.has(p.id)?'selected':''}" data-open-paragraph="${esc(p.id)}">${topicView.selecting?`<input type="checkbox" class="row-check" aria-label="Вибрати ${esc(p.name)}" ${topicView.selected.has(p.id)?'checked':''}>`:''}<span class="paragraph-no">${readerPrefs.read[p.id]?'✓':String(index+1).padStart(2,'0')}</span><div><h3>${esc(p.name)} ${readerPrefs.favorites.includes(p.id)?'<span class="row-favorite">★</span>':''}${p.quiz?.questions?.length?'<span class="row-badge" title="Є квіз">🧩</span>':''}${p.flashcards?.cards?.length?'<span class="row-badge" title="Є картки">🃏</span>':''}</h3><p>${esc(p.summary||'Відкрити матеріал')}</p>${Array.isArray(p.tags)&&p.tags.length?`<div class="tag-list">${p.tags.map((tag)=>`<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>`:''}</div>${p.image?'<span class="row-photo" title="Є зображення">▧</span>':''}<span class="topic-arrow">›</span></article>`).join(''):'<div class="empty-filter">Нічого не знайдено за цим фільтром.</div>'}</div><aside class="study-tip"><strong>💡 Як повторювати</strong><p>Прочитай параграфи, познач прочитані, а перед контрольною пройди «Тест з теми» та картки — сайт покаже частіше те, що ти ще не знаєш.</p></aside></div>`:`<div class="empty-state"><div class="empty-icon">✍️</div><h3>${canManage()?'Додай перший параграф':'Параграфів поки немає'}</h3><p>${canManage()?'Запиши пояснення, корисні факти чи додай зображення.':'Адміністратор ще не додав матеріали до цієї теми.'}</p>${canManage()?'<button class="button button-primary" id="emptyAddParagraph">＋ Додати параграф</button>':''}</div>`}`;
   $('#backToSubject').onclick=()=>{current.topicId=null;render();};$('#editTopic')?.addEventListener('click',()=>openEditor('topic',top.id));$('#addParagraph')?.addEventListener('click',()=>openEditor('paragraph'));$('#emptyAddParagraph')?.addEventListener('click',()=>openEditor('paragraph'));
-  view.querySelectorAll('[data-open-paragraph]').forEach(el=>el.addEventListener('click',()=>{const p=top.paragraphs.find(item=>item.id===el.dataset.openParagraph);if(p)openParagraph(sub,top,p);}));
+  $('#topicTest')?.addEventListener('click',()=>startCombinedQuiz(`Тест: ${top.name}`, top.paragraphs, 20));
+  $('#topicCards')?.addEventListener('click',()=>startCardReview(`Картки: ${top.name}`, top.paragraphs));
+  view.querySelectorAll('[data-topic-filter]').forEach(el=>el.addEventListener('click',()=>{topicView.filter=el.dataset.topicFilter;render();}));
+  $('#topicSort')?.addEventListener('change',e=>{topicView.sort=e.target.value;render();});
+  $('#topicTagFilter')?.addEventListener('change',e=>{topicView.tag=e.target.value;render();});
+  $('#toggleSelect')?.addEventListener('click',()=>{topicView.selecting=!topicView.selecting;topicView.selected.clear();render();});
+  $('#selectAllParagraphs')?.addEventListener('click',()=>{const all=items.every(({p})=>topicView.selected.has(p.id));items.forEach(({p})=>all?topicView.selected.delete(p.id):topicView.selected.add(p.id));render();});
+  $('#bulkMove')?.addEventListener('click',()=>bulkMoveParagraphs(top,$('#bulkMoveTarget').value));
+  $('#bulkDelete')?.addEventListener('click',()=>bulkDeleteParagraphs(top));
+  view.querySelectorAll('[data-open-paragraph]').forEach(el=>el.addEventListener('click',()=>{if(topicView.selecting){const id=el.dataset.openParagraph;topicView.selected.has(id)?topicView.selected.delete(id):topicView.selected.add(id);render();return;}const p=top.paragraphs.find(item=>item.id===el.dataset.openParagraph);if(p)openParagraph(sub,top,p);}));
+}
+async function bulkMoveParagraphs(top, target) {
+  if (!canManage() || !topicView.selected.size) return;
+  if (!target) { notify('Обери тему, куди перенести.'); return; }
+  const [subjectId, topicId] = target.split('|');
+  const destination = topic(subject(subjectId), topicId);
+  if (!destination) return;
+  const previousData = structuredClone(data);
+  const moving = top.paragraphs.filter((p) => topicView.selected.has(p.id));
+  top.paragraphs = top.paragraphs.filter((p) => !topicView.selected.has(p.id));
+  destination.paragraphs.push(...moving);
+  if (!await saveData()) { data = previousData; render(); return; }
+  topicView.selected.clear(); topicView.selecting = false;
+  notify(`Перенесено ${moving.length} у «${destination.name}».`); render();
+}
+async function bulkDeleteParagraphs(top) {
+  if (!canManage() || !topicView.selected.size) return;
+  const count = topicView.selected.size;
+  if (!confirm(`Видалити ${count} ${plural(count, 'параграф', 'параграфи', 'параграфів')}? Цю дію не можна скасувати.`)) return;
+  const previousData = structuredClone(data);
+  top.paragraphs = top.paragraphs.filter((p) => !topicView.selected.has(p.id));
+  if (!await saveData()) { data = previousData; render(); return; }
+  topicView.selected.clear(); topicView.selecting = false;
+  notify(`Видалено ${count}.`); render();
 }
 function renderParagraph(sub, top, p) {
   setBreadcrumbs([{ label: 'Спільна бібліотека', action: 'home' }, { label: sub.name, action: 'subject' }, { label: top.name, action: 'topic' }]);
@@ -1030,7 +1227,7 @@ function renderParagraph(sub, top, p) {
   const quizzes = Array.isArray(personalQuizzes[p.id]) ? personalQuizzes[p.id] : [];
   view.innerHTML = `<button class="back-link" id="backToTopic">← &nbsp;Усі параграфи: ${esc(top.name)}</button>
     <div class="article-actions"><button class="button button-primary" id="shareParagraph">Поділитися</button><button class="button button-quiet" id="favoriteParagraph" aria-pressed="${readerPrefs.favorites.includes(p.id)}">${readerPrefs.favorites.includes(p.id) ? '★ В обраному' : '☆ Додати в обране'}</button><button class="button button-quiet" id="markParagraphRead">${readerPrefs.read[p.id] ? '✓ Прочитано' : 'Позначити прочитаним'}</button><button class="button button-quiet" id="printParagraph">Друк / PDF</button><button class="button button-quiet" id="reportParagraph">Повідомити про помилку</button>${p.quiz?.questions?.length ? '<button class="button button-quiet" id="playAttachedQuiz">Пройти квіз</button>' : ''}${p.flashcards?.cards?.length ? '<button class="button button-quiet" id="openAttachedFlashcards">Флеш-картки за конспектом</button>' : ''}${(personalFlashcards[p.id] || []).length ? '<button class="button button-quiet" id="openFlashcards">Мої флеш-картки</button>' : ''}${canManage() ? '<button class="button button-quiet" id="editParagraph">Змінити</button><button class="button button-quiet danger-action" id="deleteParagraph">Видалити</button>' : ''}</div>
-    <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body">${esc(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
+    <article class="article-card" id="printableArticle"><span class="eyebrow">${esc(sub.name.toLocaleUpperCase('uk'))} &nbsp;·&nbsp; ${esc(top.name.toLocaleUpperCase('uk'))}</span><h2>${esc(p.name)}</h2>${p.summary ? `<p class="article-summary">${esc(p.summary)}</p>` : ''}${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span class="content-tag">#${esc(tag)}</span>`).join('')}</div>` : ''}${p.image ? `<img class="article-image" src="${esc(p.image)}" alt="Зображення до параграфа: ${esc(p.name)}">` : ''}<div class="article-body rich-text">${renderRichText(p.content || 'Додай сюди свої нотатки.')}</div>${p.updatedAt ? `<p class="last-updated">Оновлено: ${new Date(p.updatedAt).toLocaleString('uk-UA')}</p>` : ''}${history.length ? `<details class="change-history"><summary>Історія змін · ${history.length}</summary>${[...history].reverse().map((version) => `<article><time>${new Date(version.updatedAt).toLocaleString('uk-UA')}</time><strong>${esc(version.name)}</strong>${version.summary ? `<p>${esc(version.summary)}</p>` : ''}<div>${esc(version.content || '')}</div></article>`).join('')}</details>` : ''}</article>
     ${quizzes.length ? `<section class="personal-note"><div class="section-title"><h2>Мої квізи</h2><span>Зберігаються в цьому браузері</span></div><div class="personal-list">${quizzes.map((quiz, index) => `<button class="personal-item" data-start-quiz="${index}"><span><strong>${esc(quiz.title)}</strong><small>${quiz.questions.length} запитань</small></span><span class="personal-status">Почати →</span></button>`).join('')}</div></section>` : ''}
     <section class="personal-note"><div class="section-title"><h2>Мої нотатки</h2><span>Зберігаються лише в цьому браузері</span></div><textarea id="personalNoteInput" maxlength="5000" placeholder="Запиши своє пояснення або питання до теми…">${esc(readerPrefs.notes[p.id] || '')}</textarea><button class="button button-quiet" id="savePersonalNote">Зберегти нотатку</button></section>
     <section class="comments-panel" id="commentsPanel"><div class="section-title"><h2>Коментарі</h2><span id="commentCount">Завантаження…</span></div><p class="auth-copy">Коментувати можуть лише користувачі, які увійшли. Ліміт: 4 коментарі за 10 хвилин і 15 за добу.</p>${currentUser ? `<form id="commentForm" class="comment-form"><textarea name="body" maxlength="1200" minlength="2" required placeholder="Запитай або доповни матеріал…"></textarea><button class="button button-primary" type="submit">Надіслати коментар</button></form>` : `<button class="button button-quiet" id="commentSignIn">Увійди, щоб коментувати</button>`}<div id="commentList" class="comment-list"><p class="auth-copy">Завантажую коментарі…</p></div></section>`;
@@ -1050,6 +1247,7 @@ function renderParagraph(sub, top, p) {
   $('#commentForm')?.addEventListener('submit', (event) => submitComment(event, p.id));
   view.querySelectorAll('[data-start-quiz]').forEach((button) => button.addEventListener('click', () => beginQuiz(quizzes[Number(button.dataset.startQuiz)])));
   loadComments(p.id);
+  typesetMath();
 }
 function additionalStudyToolsMarkup(prefix, quiz = null, flashcards = null) {
   const hasQuiz = Boolean(quiz?.questions?.length);
@@ -1127,6 +1325,34 @@ function parseFlashcards(raw) {
   });
   return { title: deck.title.trim().slice(0, 100) || 'Флеш-картки', cards };
 }
+function cardKey(paragraphId, card) { return `${paragraphId}::${card.front}`; }
+function cardsOf(p) { return [...(Array.isArray(p.flashcards?.cards) ? p.flashcards.cards : []), ...(personalFlashcards[p.id] || [])].map((card) => ({ front: card.front, back: card.back, key: cardKey(p.id, card), source: p.name })); }
+function cardIsDue(card, now = Date.now()) { const state = cardProgress[card.key]; return !state || !state.due || state.due <= now; }
+function dueCardsIn(paragraphs) { return paragraphs.flatMap(cardsOf).filter((card) => cardIsDue(card)); }
+function orderCards(cards) { return shuffle(cards).sort((x, y) => (cardProgress[x.key]?.box || 0) - (cardProgress[y.key]?.box || 0)); }
+function startCardReview(title, paragraphs) {
+  const deck = orderCards(dueCardsIn(paragraphs));
+  if (!deck.length) { notify('🎉 Усі картки тут уже повторено. Повертайся завтра!'); return; }
+  activeFlashcardId = null; flashcardIndex = 0; flashcardShowingBack = false; flashcardReviewMode = true; activeFlashcardDeck = deck;
+  $('#flashcardDialog h2').textContent = title;
+  updateFlashcardView(); $('#flashcardDialog').showModal();
+}
+function gradeFlashcard(known) {
+  const card = activeFlashcardDeck[flashcardIndex];
+  if (!card) return;
+  const previous = cardProgress[card.key]?.box || 0;
+  const box = known ? Math.min(previous + 1, CARD_INTERVAL_DAYS.length - 1) : 0;
+  cardProgress[card.key] = { box, due: Date.now() + CARD_INTERVAL_DAYS[box] * 86400000 - 3600000 };
+  savePersonalStore(CARD_PROGRESS_KEY, cardProgress);
+  flashcardShowingBack = false;
+  if (flashcardReviewMode) {
+    activeFlashcardDeck.splice(flashcardIndex, 1);
+    if (!known) activeFlashcardDeck.push(card);
+    if (flashcardIndex >= activeFlashcardDeck.length) flashcardIndex = 0;
+  } else if (flashcardIndex < activeFlashcardDeck.length - 1) flashcardIndex++;
+  else { notify(known ? 'Набір пройдено! 🎉' : 'Набір пройдено. Складні картки покажу частіше.'); }
+  updateFlashcardView();
+}
 function beginQuiz(quiz) {
   if (!quiz?.questions?.length) return;
   activeQuiz = quiz;
@@ -1141,35 +1367,43 @@ function renderQuizScreen() {
   const correct = quizAnswers.reduce((count, answer, index) => count + (answer === activeQuiz.questions[index].answer ? 1 : 0), 0);
   setBreadcrumbs([{ label: 'Квіз' }]);
   if (quizIndex >= total) {
-    view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;До параграфа</button><span class="eyebrow">КВІЗ ЗАВЕРШЕНО</span><h1>${esc(activeQuiz.title)}</h1><p class="quiz-score">${correct} із ${total} правильних відповідей</p><div class="quiz-actions"><button class="button button-primary" id="retryQuiz">Спробувати ще раз</button><button class="button button-quiet" id="leaveQuizBottom">До параграфа</button></div></div>`;
-    $('#retryQuiz').onclick = () => beginQuiz(activeQuiz);
+    view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;Назад</button><span class="eyebrow">КВІЗ ЗАВЕРШЕНО</span><h1>${esc(activeQuiz.title)}</h1><p class="quiz-score">${correct} із ${total} правильних відповідей ${correct === total ? '🎉' : ''}</p><div class="quiz-actions">${correct < total ? `<button class="button button-primary" id="retryMistakes">Пройти тільки помилки (${total - correct})</button>` : ''}<button class="button ${correct < total ? 'button-quiet' : 'button-primary'}" id="retryQuiz">Спробувати ще раз</button><button class="button button-quiet" id="leaveQuizBottom">Назад</button></div></div>`;
+    $('#retryQuiz').onclick = () => beginQuiz({ ...activeQuiz, questions: shuffle(activeQuiz.questions) });
+    $('#retryMistakes')?.addEventListener('click', () => beginQuiz({ ...activeQuiz, title: activeQuiz.title.replace(/ — помилки$/, '') + ' — помилки', questions: activeQuiz.questions.filter((question, index) => quizAnswers[index] !== question.answer) }));
     $('#leaveQuiz').onclick = $('#leaveQuizBottom').onclick = leaveQuiz;
     return;
   }
   const question = activeQuiz.questions[quizIndex];
   const selected = quizAnswers[quizIndex];
-  view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;До параграфа</button><div class="quiz-progress">Запитання ${quizIndex + 1} із ${total}</div><h1>${esc(activeQuiz.title)}</h1><h2>${esc(question.question)}</h2><div class="quiz-options">${question.options.map((option, index) => `<button class="quiz-option ${selected !== null ? (index === question.answer ? 'correct' : index === selected ? 'incorrect' : '') : ''}" data-quiz-answer="${index}" ${selected !== null ? 'disabled' : ''}>${esc(option)}</button>`).join('')}</div>${selected !== null ? `<p class="quiz-feedback ${selected === question.answer ? 'correct-text' : 'incorrect-text'}">${selected === question.answer ? 'Правильно!' : 'Поки що ні.'} ${esc(question.explanation)}</p><button class="button button-primary" id="nextQuizQuestion">${quizIndex + 1 === total ? 'Показати результат' : 'Наступне запитання →'}</button>` : ''}</div>`;
+  view.innerHTML = `<div class="quiz-card"><button class="back-link" id="leaveQuiz">← &nbsp;Назад</button><div class="quiz-progress">Запитання ${quizIndex + 1} із ${total}</div><h1>${esc(activeQuiz.title)}</h1>${question.source ? `<p class="quiz-source">З параграфа: ${esc(question.source)}</p>` : ''}<h2>${esc(question.question)}</h2><div class="quiz-options">${question.options.map((option, index) => `<button class="quiz-option ${selected !== null ? (index === question.answer ? 'correct' : index === selected ? 'incorrect' : '') : ''}" data-quiz-answer="${index}" ${selected !== null ? 'disabled' : ''}>${esc(option)}</button>`).join('')}</div>${selected !== null ? `<p class="quiz-feedback ${selected === question.answer ? 'correct-text' : 'incorrect-text'}">${selected === question.answer ? 'Правильно!' : 'Поки що ні.'} ${esc(question.explanation)}</p><button class="button button-primary" id="nextQuizQuestion">${quizIndex + 1 === total ? 'Показати результат' : 'Наступне запитання →'}</button>` : ''}</div>`;
   $('#leaveQuiz').onclick = leaveQuiz;
   view.querySelectorAll('[data-quiz-answer]').forEach((button) => button.addEventListener('click', () => { quizAnswers[quizIndex] = Number(button.dataset.quizAnswer); renderQuizScreen(); }));
   $('#nextQuizQuestion')?.addEventListener('click', () => { quizIndex++; renderQuizScreen(); });
 }
-function leaveQuiz() { activeScreen = 'library'; render(); }
+function leaveQuiz() { activeScreen = 'library'; if (quizReturn) { current = { ...quizReturn }; quizReturn = null; } render(); }
 function openFlashcardDialog(paragraphId, sharedDeck = null) {
   activeFlashcardId = paragraphId;
   flashcardIndex = 0;
   flashcardShowingBack = false;
-  activeFlashcardDeck = [...(Array.isArray(sharedDeck?.cards) ? sharedDeck.cards : []), ...(personalFlashcards[paragraphId] || [])];
+  flashcardReviewMode = false;
+  const found = findParagraph(paragraphId);
+  activeFlashcardDeck = found ? cardsOf(found.paragraph) : [...(Array.isArray(sharedDeck?.cards) ? sharedDeck.cards : []), ...(personalFlashcards[paragraphId] || [])].map((card) => ({ ...card, key: cardKey(paragraphId, card) }));
+  activeFlashcardDeck = [...activeFlashcardDeck.filter((card) => cardIsDue(card)), ...activeFlashcardDeck.filter((card) => !cardIsDue(card))];
+  $('#flashcardDialog h2').textContent = 'Флеш-картки';
   updateFlashcardView();
   $('#flashcardDialog').showModal();
 }
 function updateFlashcardView() {
   const card = activeFlashcardDeck[flashcardIndex];
-  $('#flashcardCount').textContent = card ? `Картка ${flashcardIndex + 1} із ${activeFlashcardDeck.length}` : 'У цьому наборі ще немає карток.';
-  $('#flashcardFaceLabel').textContent = card ? (flashcardShowingBack ? 'Відповідь' : 'Запитання') : 'У цьому наборі ще немає карток';
-  $('#flashcardFaceText').textContent = card ? (flashcardShowingBack ? card.back : card.front) : '☆';
+  const state = card ? cardProgress[card.key] : null;
+  $('#flashcardCount').textContent = card ? (flashcardReviewMode ? `Залишилось карток: ${activeFlashcardDeck.length}${card.source ? ` · ${card.source}` : ''}` : `Картка ${flashcardIndex + 1} із ${activeFlashcardDeck.length}${state ? ` · рівень ${state.box}/5` : ' · нова'}`) : (flashcardReviewMode ? '🎉 На сьогодні все повторено!' : 'У цьому наборі ще немає карток.');
+  $('#flashcardFaceLabel').textContent = card ? (flashcardShowingBack ? 'Відповідь' : 'Запитання') : (flashcardReviewMode ? 'Молодець!' : 'У цьому наборі ще немає карток');
+  $('#flashcardFaceText').textContent = card ? (flashcardShowingBack ? card.back : card.front) : (flashcardReviewMode ? '🎉' : '☆');
   $('#flipFlashcard').disabled = !card;
+  $('#previousFlashcard').hidden = $('#nextFlashcard').hidden = flashcardReviewMode;
   $('#previousFlashcard').disabled = !card || flashcardIndex === 0;
   $('#nextFlashcard').disabled = !card || flashcardIndex >= activeFlashcardDeck.length - 1;
+  $('#flashcardGrade').hidden = !card || !flashcardShowingBack;
 }
 async function loadComments(paragraphId) {
   const count = $('#commentCount');
@@ -1262,14 +1496,14 @@ async function importBackup(file){if(!canManage())return;const previousData=stru
 $('#addSubject').onclick=()=>openEditor('subject');$('#editorForm').addEventListener('submit',saveEditor);$('#closeDialog').onclick=closeEditor;$('#cancelDialog').onclick=closeEditor;$('#editorDialog').addEventListener('click',e=>{if(e.target===$('#editorDialog'))closeEditor();});$('#homeLink').onclick=e=>{e.preventDefault();clearSharedParagraphUrl();activeScreen='library';current={subjectId:null,topicId:null,paragraphId:null};$('#searchInput').value='';render();};$('#backupButton').onclick=backup;$('#importButton').onclick=()=>{if(canManage())$('#importFile').click();};$('#importFile').addEventListener('change',e=>{if(e.target.files[0])importBackup(e.target.files[0]);e.target.value='';});
 $('#accountButton').addEventListener('click',handleAccountButton);$('#submitNotesButton').addEventListener('click',openSubmissionFlow);$('#authForm').addEventListener('submit',requestAdminLink);$('#googleSignInButton').addEventListener('click',signInWithGoogle);$('#closeAuthDialog').onclick=()=>$('#authDialog').close();$('#cancelAuthDialog').onclick=()=>$('#authDialog').close();$('#authDialog').addEventListener('click',e=>{if(e.target===$('#authDialog'))$('#authDialog').close();});
 $('#submissionForm').addEventListener('submit',submitSuggestion);$('#submissionImage').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const image=await compressImage(file);if(image.length>500000){e.target.value='';notify('Зображення завелике. Спробуй менше або простіше фото.');return;}const preview=$('#submissionImagePreview');preview.src=image;preview.style.display='block';preview.dataset.newImage=image;}catch{notify('Не вдалося відкрити це зображення.');}});$('#closeSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#cancelSubmissionDialog').onclick=()=>$('#submissionDialog').close();$('#submissionDialog').addEventListener('click',e=>{if(e.target===$('#submissionDialog'))$('#submissionDialog').close();});
-$('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
+$('#statsButton').addEventListener('click',()=>{activeScreen='stats';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current={subjectId:null,topicId:null,paragraphId:null};render();});$('#reportForm').addEventListener('submit',submitLibraryReport);$('#closeReportDialog').onclick=()=>$('#reportDialog').close();$('#cancelReportDialog').onclick=()=>$('#reportDialog').close();$('#reportDialog').addEventListener('click',e=>{if(e.target===$('#reportDialog'))$('#reportDialog').close();});
 $('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
 $('#commentNotificationGo')?.addEventListener('click',openNotifiedComment);$('#commentNotificationLater')?.addEventListener('click',()=>$('#commentNotificationDialog')?.close());$('#commentNotificationDialog')?.addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
 $('#donatePleaseClose').addEventListener('click',dismissDonatePlease);$('#donatePleaseDialog').addEventListener('cancel',e=>{e.preventDefault();dismissDonatePlease();});$('#donatePleaseDialog').addEventListener('click',e=>{if(e.target===$('#donatePleaseDialog'))dismissDonatePlease();});
 $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#csvImportPaste').addEventListener('input',e=>previewPastedImport(e.target.value));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
-if (supportPageUrl) $('#donatePleaseDialog').showModal();
+if (supportPageUrl && shouldShowDonatePlease()) $('#donatePleaseDialog').showModal();
 const THEME_KEY = 'zoshit-theme';
 const themeColors = { light: '#f6f7fb', dark: '#14151d', pig: '#fff0f5', elephant: '#eef1f5' };
 const secretThemes = {
@@ -1304,3 +1538,23 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { 
 $('#searchInput').addEventListener('input', (event) => { Object.entries(secretThemes).forEach(([name, theme]) => { if (theme.pattern.test(event.target.value)) unlockSecretTheme(name); }); });
 applyTheme();
 (() => { const kbd = document.getElementById('searchShortcut'); if (!kbd) return; if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) kbd.textContent = '⌘ K'; if (matchMedia('(hover: none)').matches) kbd.hidden = true; })();
+
+$('#gradeUnknown').addEventListener('click', () => gradeFlashcard(false));
+$('#gradeKnown').addEventListener('click', () => gradeFlashcard(true));
+$('#flashcardDialog').addEventListener('close', () => { if (flashcardReviewMode) { flashcardReviewMode = false; render(); } });
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+window.addEventListener('online', () => { if (cloudConfigured && !cloudReady) location.reload(); });
+
+document.querySelectorAll('[data-copy-tool]').forEach((button) => button.addEventListener('click', async () => {
+  const label = button.textContent;
+  try {
+    const response = await fetch(button.dataset.copyTool, { cache: 'no-cache' });
+    if (!response.ok) throw new Error();
+    await navigator.clipboard.writeText(await response.text());
+    button.textContent = '✓ Скопійовано';
+  } catch { button.textContent = '❌ Не вдалося — відкрий файл у GitHub'; }
+  setTimeout(() => { button.textContent = label; }, 2500);
+}));
