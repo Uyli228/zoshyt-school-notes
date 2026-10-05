@@ -673,6 +673,7 @@ function startCsvImport() {
   $('#csvImportPreview').innerHTML = '';
   $('#confirmCsvImport').disabled = true;
   $('#csvImportFileVisible').value = '';
+  $('#csvImportPaste').value = '';
   $('#csvImportDialog').showModal();
 }
 function parseCsv(text) {
@@ -717,6 +718,52 @@ function tableRowsToItems(rows) {
   if (parsed.length > 1000) throw new Error('За один раз можна додати не більше 1000 рядків.');
   return parsed;
 }
+function parseJsonImport(text) {
+  const source = String(text).replace(/^\uFEFF/, '').trim();
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  let parsed;
+  try { parsed = JSON.parse(fenced ? fenced[1] : source.slice(Math.min(...['[', '{'].map((c) => source.indexOf(c)).filter((i) => i >= 0)))); }
+  catch { throw new Error('Не вдалося прочитати JSON. Скопіюй повну відповідь ШІ разом із дужками.'); }
+  if (!Array.isArray(parsed) && Array.isArray(parsed?.subjects) && parsed.subjects.every((item) => Array.isArray(item?.topics))) throw new Error('Це повна копія бібліотеки. Для неї є кнопка «Імпорт копії».');
+  const list = Array.isArray(parsed) ? parsed : parsed?.materials || parsed?.items || parsed?.paragraphs || parsed?.['конспекти'];
+  if (!Array.isArray(list) || !list.length) throw new Error('У JSON немає списку матеріалів (materials).');
+  if (list.length > 1000) throw new Error('За один раз можна додати не більше 1000 матеріалів.');
+  const pick = (item, ...keys) => { for (const key of keys) if (item?.[key] != null && item[key] !== '') return item[key]; return ''; };
+  return list.map((item, index) => {
+    const line = index + 1;
+    const row = {
+      line,
+      subject: String(pick(item, 'subject', 'предмет')).trim(), topic: String(pick(item, 'topic', 'тема')).trim(),
+      title: String(pick(item, 'title', 'name', 'назва')).trim(), summary: String(pick(item, 'summary', 'опис')).trim(),
+      content: String(pick(item, 'content', 'конспект', 'текст')).trim(),
+      tags: (Array.isArray(pick(item, 'tags', 'теги')) ? pick(item, 'tags', 'теги') : String(pick(item, 'tags', 'теги')).split(/[|;,]/)).map((tag) => String(tag).trim()).filter(Boolean),
+      quiz: null, flashcards: null
+    };
+    if (!row.subject || !row.topic || !row.title) throw new Error(`У матеріалі №${line} бракує предмета, теми або назви.`);
+    const quiz = pick(item, 'quiz', 'квіз'), cards = pick(item, 'flashcards', 'cards', 'картки');
+    try { if (quiz) row.quiz = parseQuiz(JSON.stringify(quiz)); } catch (error) { throw new Error(`Матеріал №${line} «${row.title}»: ${error.message}`); }
+    try { if (cards) row.flashcards = parseFlashcards(JSON.stringify(Array.isArray(cards) ? { title: row.title, cards } : cards)); } catch (error) { throw new Error(`Матеріал №${line} «${row.title}»: ${error.message}`); }
+    return row;
+  });
+}
+function showImportPreview(rows) {
+  bulkImportRows = rows;
+  const quizzes = rows.filter((row) => row.quiz).length, decks = rows.filter((row) => row.flashcards).length;
+  $('#csvImportHint').textContent = `Знайдено ${rows.length} матеріалів${quizzes ? `, квізів: ${quizzes}` : ''}${decks ? `, наборів карток: ${decks}` : ''}. Переглянь і підтвердь імпорт.`;
+  $('#csvImportPreview').innerHTML = `<ul>${rows.slice(0, 12).map((row) => `<li><strong>${esc(row.subject)} › ${esc(row.topic)} › ${esc(row.title)}</strong>${row.quiz ? ' <small>🧩 квіз</small>' : ''}${row.flashcards ? ' <small>🃏 картки</small>' : ''}${row.tags.length ? `<small>${row.tags.map((tag) => `#${esc(tag)}`).join(' ')}</small>` : ''}</li>`).join('')}</ul>${rows.length > 12 ? `<small>Інші ${rows.length - 12} матеріалів теж буде імпортовано.</small>` : ''}`;
+  $('#confirmCsvImport').disabled = false;
+}
+function showImportError(error) {
+  bulkImportRows = [];
+  $('#confirmCsvImport').disabled = true;
+  $('#csvImportPreview').innerHTML = '';
+  $('#csvImportHint').textContent = error.message || 'Не вдалося прочитати ці дані.';
+}
+function previewPastedImport(text) {
+  if (!text.trim()) { bulkImportRows = []; $('#confirmCsvImport').disabled = true; $('#csvImportPreview').innerHTML = ''; $('#csvImportHint').textContent = 'Вибери файл або встав відповідь ШІ.'; return; }
+  $('#csvImportFileVisible').value = '';
+  try { showImportPreview(parseJsonImport(text)); } catch (error) { showImportError(error); }
+}
 let sheetJsPromise = null;
 function loadSheetJs() {
   if (window.XLSX) return Promise.resolve(window.XLSX);
@@ -738,17 +785,12 @@ async function parseExcel(file) {
 }
 async function previewCsvFile(file) {
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { bulkImportRows = []; $('#confirmCsvImport').disabled = true; $('#csvImportPreview').innerHTML = ''; $('#csvImportHint').textContent = 'Файл має бути меншим за 10 МБ.'; return; }
+  if (file.size > 10 * 1024 * 1024) { showImportError(new Error('Файл має бути меншим за 10 МБ.')); return; }
+  $('#csvImportPaste').value = '';
   try {
-    bulkImportRows = /\.(xlsx|xlsm|xls|ods)$/i.test(file.name) ? await parseExcel(file) : parseCsv(await file.text());
-    $('#csvImportHint').textContent = `Знайдено ${bulkImportRows.length} рядків. Переглянь перші матеріали й підтвердь імпорт.`;
-    $('#csvImportPreview').innerHTML = `<ul>${bulkImportRows.slice(0, 12).map((row) => `<li><strong>${esc(row.subject)} › ${esc(row.topic)} › ${esc(row.title)}</strong>${row.tags.length ? `<small>${row.tags.map((tag) => `#${esc(tag)}`).join(' ')}</small>` : ''}</li>`).join('')}</ul>${bulkImportRows.length > 12 ? `<small>Інші ${bulkImportRows.length - 12} рядків теж буде імпортовано.</small>` : ''}`;
-    $('#confirmCsvImport').disabled = false;
-  } catch (error) {
-    bulkImportRows = [];
-    $('#confirmCsvImport').disabled = true;
-    $('#csvImportHint').textContent = error.message || 'Не вдалося прочитати цю таблицю.';
-  }
+    const rows = /\.json$/i.test(file.name) ? parseJsonImport(await file.text()) : /\.(xlsx|xlsm|xls|ods)$/i.test(file.name) ? await parseExcel(file) : parseCsv(await file.text());
+    showImportPreview(rows);
+  } catch (error) { showImportError(error); }
 }
 function downloadCsvTemplate() {
   const csv = '\uFEFFпредмет;тема;назва;опис;конспект;теги\r\nБіологія;Клітина;Будова клітини;Основні частини клітини;Ядро зберігає спадкову інформацію.;важливо|контрольна\r\n';
@@ -764,7 +806,7 @@ async function importCsvRows() {
     let top = sub.topics.find((item) => item.name.trim().toLocaleLowerCase('uk') === row.topic.toLocaleLowerCase('uk'));
     if (!top) { top = { id: uid(), name: row.topic, description: '', paragraphs: [] }; sub.topics.push(top); }
     if (top.paragraphs.some((item) => item.name.trim().toLocaleLowerCase('uk') === row.title.toLocaleLowerCase('uk'))) { skipped++; continue; }
-    top.paragraphs.push({ id: uid(), name: row.title, summary: row.summary, content: row.content, tags: row.tags, image: '', updatedAt: new Date().toISOString(), history: [] }); added++;
+    top.paragraphs.push({ id: uid(), name: row.title, summary: row.summary, content: row.content, tags: row.tags, image: '', quiz: row.quiz || null, flashcards: row.flashcards || null, updatedAt: new Date().toISOString(), history: [] }); added++;
   }
   if (!await saveData()) { data = previousData; return; }
   $('#csvImportDialog').close(); activeScreen = 'library'; current = { subjectId: null, topicId: null, paragraphId: null }; render();
@@ -1186,7 +1228,7 @@ $('#reportsButton').addEventListener('click',()=>{activeScreen='reports';current
 $('#flipFlashcard').addEventListener('click',()=>{if(!activeFlashcardDeck[flashcardIndex])return;flashcardShowingBack=!flashcardShowingBack;updateFlashcardView();});$('#previousFlashcard').addEventListener('click',()=>{flashcardIndex=Math.max(0,flashcardIndex-1);flashcardShowingBack=false;updateFlashcardView();});$('#nextFlashcard').addEventListener('click',()=>{flashcardIndex=Math.min(activeFlashcardDeck.length-1,flashcardIndex+1);flashcardShowingBack=false;updateFlashcardView();});$('#closeFlashcardDialog').onclick=$('#closeFlashcards').onclick=()=>$('#flashcardDialog').close();$('#flashcardDialog').addEventListener('click',e=>{if(e.target===$('#flashcardDialog'))$('#flashcardDialog').close();});
 $('#commentNotificationGo')?.addEventListener('click',openNotifiedComment);$('#commentNotificationLater')?.addEventListener('click',()=>$('#commentNotificationDialog')?.close());$('#commentNotificationDialog')?.addEventListener('click',e=>{if(e.target===$('#commentNotificationDialog'))$('#commentNotificationDialog').close();});
 $('#donatePleaseClose').addEventListener('click',dismissDonatePlease);$('#donatePleaseDialog').addEventListener('cancel',e=>{e.preventDefault();dismissDonatePlease();});$('#donatePleaseDialog').addEventListener('click',e=>{if(e.target===$('#donatePleaseDialog'))dismissDonatePlease();});
-$('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
+$('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFileVisible').addEventListener('change',e=>previewCsvFile(e.target.files[0]));$('#csvImportPaste').addEventListener('input',e=>previewPastedImport(e.target.value));$('#downloadCsvTemplate').addEventListener('click',downloadCsvTemplate);$('#confirmCsvImport').addEventListener('click',importCsvRows);$('#closeCsvImportDialog').onclick=()=>$('#csvImportDialog').close();$('#cancelCsvImport').onclick=()=>$('#csvImportDialog').close();$('#csvImportDialog').addEventListener('click',e=>{if(e.target===$('#csvImportDialog'))$('#csvImportDialog').close();});
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
 if (supportPageUrl) $('#donatePleaseDialog').showModal();
