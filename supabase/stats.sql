@@ -22,7 +22,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $$
+as $body$
 begin
   if p_paragraph_id is null or char_length(p_paragraph_id) not between 1 and 100 then
     return;
@@ -42,7 +42,7 @@ begin
   values (p_paragraph_id, current_date, 1)
   on conflict (paragraph_id, day) do update set views = public.paragraph_view_days.views + 1;
 end;
-$$;
+$body$;
 
 revoke all on function public.record_paragraph_view(text) from public;
 grant execute on function public.record_paragraph_view(text) to anon, authenticated;
