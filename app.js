@@ -51,6 +51,7 @@ let pendingSubmissionCount = 0;
 let activeScreen = 'library';
 let submissionQueryGeneration = 0;
 let bulkImportRows = [];
+let bulkSubjectMap = {};
 let reportTarget = null;
 let personalQuizzes = loadPersonalStore(QUIZZES_KEY);
 let personalFlashcards = loadPersonalStore(FLASHCARDS_KEY);
@@ -720,13 +721,21 @@ function tableRowsToItems(rows) {
 }
 function parseJsonImport(text) {
   const source = String(text).replace(/^\uFEFF/, '').trim();
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  let parsed;
-  try { parsed = JSON.parse(fenced ? fenced[1] : source.slice(Math.min(...['[', '{'].map((c) => source.indexOf(c)).filter((i) => i >= 0)))); }
-  catch { throw new Error('Не вдалося прочитати JSON. Скопіюй повну відповідь ШІ разом із дужками.'); }
-  if (!Array.isArray(parsed) && Array.isArray(parsed?.subjects) && parsed.subjects.every((item) => Array.isArray(item?.topics))) throw new Error('Це повна копія бібліотеки. Для неї є кнопка «Імпорт копії».');
-  const list = Array.isArray(parsed) ? parsed : parsed?.materials || parsed?.items || parsed?.paragraphs || parsed?.['конспекти'];
-  if (!Array.isArray(list) || !list.length) throw new Error('У JSON немає списку матеріалів (materials).');
+  const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1]);
+  const listOf = (value) => Array.isArray(value) ? value : value?.materials || value?.items || value?.paragraphs || value?.['конспекти'];
+  let list = [];
+  try {
+    if (blocks.length) for (const block of blocks) { const value = JSON.parse(block); if (Array.isArray(value?.subjects) && value.subjects.every((item) => Array.isArray(item?.topics))) throw new Error('backup'); list.push(...(listOf(value) || [])); }
+    else {
+      const parsed = JSON.parse(source.slice(Math.min(...['[', '{'].map((c) => source.indexOf(c)).filter((i) => i >= 0))));
+      if (!Array.isArray(parsed) && Array.isArray(parsed?.subjects) && parsed.subjects.every((item) => Array.isArray(item?.topics))) throw new Error('backup');
+      list = listOf(parsed) || [];
+    }
+  } catch (error) {
+    if (error.message === 'backup') throw new Error('Це повна копія бібліотеки. Для неї є кнопка «Імпорт копії».');
+    throw new Error(blocks.length > 1 ? 'Один із блоків JSON пошкоджений (можливо, відповідь ШІ обрізалась).' : 'Не вдалося прочитати JSON. Скопіюй повну відповідь ШІ разом із дужками.');
+  }
+  if (!list.length) throw new Error('У JSON немає списку матеріалів (materials).');
   if (list.length > 1000) throw new Error('За один раз можна додати не більше 1000 матеріалів.');
   const pick = (item, ...keys) => { for (const key of keys) if (item?.[key] != null && item[key] !== '') return item[key]; return ''; };
   return list.map((item, index) => {
@@ -746,11 +755,36 @@ function parseJsonImport(text) {
     return row;
   });
 }
+function normalizeSubjectName(name = '') {
+  let value = String(name).toLocaleLowerCase('uk').replace(/[’'`ʼ]/g, '')
+    .replace(/^\s*\d{1,2}\s*[-–—.]?\s*(?:[а-яіїєґa-z](?=[\s\-–—.,]|$))?/u, ' ')
+    .replace(/(^|\s)\d{1,2}(?:\s*[-–—]?\s*[а-яіїєґa-z])?(?=\s|$)/gu, ' ').replace(/(^|\s)(клас|кл)(?=\s|$)/gu, ' ')
+    .replace(/[^\p{L}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const aliases = [[/^укр\w*\s*мов/u, 'українська мова'], [/^укр\w*\s*літ/u, 'українська література'], [/^(зарубіжна|світова)\s*літ/u, 'зарубіжна література'], [/^англ/u, 'англійська мова'], [/^нім/u, 'німецька мова'], [/^іст\w*\s*укр/u, 'історія україни'], [/^(всесвітня|світова)\s*іст/u, 'всесвітня історія'], [/^фіз\w*\s*(культ|вих)/u, 'фізична культура'], [/^інформ/u, 'інформатика']];
+  for (const [pattern, canonical] of aliases) if (pattern.test(value)) return canonical;
+  return value;
+}
+function cleanSubjectName(name = '') {
+  const value = normalizeSubjectName(name);
+  return value ? value.charAt(0).toLocaleUpperCase('uk') + value.slice(1) : String(name).trim();
+}
+function guessExistingSubject(name) {
+  const wanted = normalizeSubjectName(name);
+  if (!wanted) return null;
+  return data.find((item) => normalizeSubjectName(item.name) === wanted)
+    || data.find((item) => { const have = normalizeSubjectName(item.name); return have.length >= 4 && wanted.length >= 4 && (wanted.includes(have) || have.includes(wanted)); })
+    || null;
+}
 function showImportPreview(rows) {
   bulkImportRows = rows;
+  const incoming = [...new Set(rows.map((row) => row.subject))];
+  bulkSubjectMap = Object.fromEntries(incoming.map((name) => [name, guessExistingSubject(name)?.id || 'new']));
+  const subjectOptions = (name) => `<option value="new"${bulkSubjectMap[name] === 'new' ? ' selected' : ''}>➕ Новий предмет «${esc(cleanSubjectName(name))}»</option>${data.map((item) => `<option value="${esc(item.id)}"${bulkSubjectMap[name] === item.id ? ' selected' : ''}>${esc(item.icon || '📚')} ${esc(item.name)}</option>`).join('')}`;
+  const mapping = `<div class="import-subject-map"><strong>Куди додати</strong>${incoming.map((name, index) => `<label><span>${esc(name)} <small>(${rows.filter((row) => row.subject === name).length})</small></span><select data-import-subject="${index}">${subjectOptions(name)}</select></label>`).join('')}</div>`;
   const quizzes = rows.filter((row) => row.quiz).length, decks = rows.filter((row) => row.flashcards).length;
   $('#csvImportHint').textContent = `Знайдено ${rows.length} матеріалів${quizzes ? `, квізів: ${quizzes}` : ''}${decks ? `, наборів карток: ${decks}` : ''}. Переглянь і підтвердь імпорт.`;
-  $('#csvImportPreview').innerHTML = `<ul>${rows.slice(0, 12).map((row) => `<li><strong>${esc(row.subject)} › ${esc(row.topic)} › ${esc(row.title)}</strong>${row.quiz ? ' <small>🧩 квіз</small>' : ''}${row.flashcards ? ' <small>🃏 картки</small>' : ''}${row.tags.length ? `<small>${row.tags.map((tag) => `#${esc(tag)}`).join(' ')}</small>` : ''}</li>`).join('')}</ul>${rows.length > 12 ? `<small>Інші ${rows.length - 12} матеріалів теж буде імпортовано.</small>` : ''}`;
+  $('#csvImportPreview').innerHTML = mapping + `<ul>${rows.slice(0, 12).map((row) => `<li><strong>${esc(row.subject)} › ${esc(row.topic)} › ${esc(row.title)}</strong>${row.quiz ? ' <small>🧩 квіз</small>' : ''}${row.flashcards ? ' <small>🃏 картки</small>' : ''}${row.tags.length ? `<small>${row.tags.map((tag) => `#${esc(tag)}`).join(' ')}</small>` : ''}</li>`).join('')}</ul>${rows.length > 12 ? `<small>Інші ${rows.length - 12} матеріалів теж буде імпортовано.</small>` : ''}`;
+  $('#csvImportPreview').querySelectorAll('[data-import-subject]').forEach((select) => select.addEventListener('change', () => { bulkSubjectMap[incoming[+select.dataset.importSubject]] = select.value; }));
   $('#confirmCsvImport').disabled = false;
 }
 function showImportError(error) {
@@ -801,11 +835,14 @@ async function importCsvRows() {
   const previousData = structuredClone(data);
   let added = 0, skipped = 0;
   for (const row of bulkImportRows) {
-    let sub = data.find((item) => item.name.trim().toLocaleLowerCase('uk') === row.subject.toLocaleLowerCase('uk'));
-    if (!sub) { const color = colors[data.length % colors.length]; sub = { id: uid(), name: row.subject, icon: '📚', color: color.color, tint: color.tint, topics: [] }; data.push(sub); }
-    let top = sub.topics.find((item) => item.name.trim().toLocaleLowerCase('uk') === row.topic.toLocaleLowerCase('uk'));
+    const mapped = bulkSubjectMap[row.subject];
+    let sub = mapped && mapped !== 'new' ? data.find((item) => item.id === mapped) : data.find((item) => item.name.trim().toLocaleLowerCase('uk') === row.subject.toLocaleLowerCase('uk'));
+    if (!sub) { const newName = cleanSubjectName(row.subject); sub = data.find((item) => item.name === newName); }
+    if (!sub) { const color = colors[data.length % colors.length]; sub = { id: uid(), name: cleanSubjectName(row.subject), icon: '📚', color: color.color, tint: color.tint, topics: [] }; data.push(sub); }
+    const topicKey = (name) => String(name).toLocaleLowerCase('uk').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    let top = sub.topics.find((item) => topicKey(item.name) === topicKey(row.topic));
     if (!top) { top = { id: uid(), name: row.topic, description: '', paragraphs: [] }; sub.topics.push(top); }
-    if (top.paragraphs.some((item) => item.name.trim().toLocaleLowerCase('uk') === row.title.toLocaleLowerCase('uk'))) { skipped++; continue; }
+    if (sub.topics.some((item) => item.paragraphs.some((para) => topicKey(para.name) === topicKey(row.title)))) { skipped++; continue; }
     top.paragraphs.push({ id: uid(), name: row.title, summary: row.summary, content: row.content, tags: row.tags, image: '', quiz: row.quiz || null, flashcards: row.flashcards || null, updatedAt: new Date().toISOString(), history: [] }); added++;
   }
   if (!await saveData()) { data = previousData; return; }
