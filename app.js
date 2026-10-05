@@ -161,6 +161,7 @@ function turnTextIntoElephants(root = document.body) {
 function activateElephantMode() {
   if (elephantModeActive) return;
   elephantModeActive = true;
+  try { localStorage.setItem('zoshit-elephant-unlocked', '1'); } catch {}
   document.body.classList.add('elephant-mode');
   const brandMark = $('#homeLink .brand-mark');
   if (brandMark) brandMark.innerHTML = '<span class="elephant-logo">🐘</span>';
@@ -1269,33 +1270,37 @@ $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFile
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
 if (supportPageUrl) $('#donatePleaseDialog').showModal();
-const THEME_KEY = 'zoshit-theme', PIG_KEY = 'zoshit-pig-unlocked';
-const themeColors = { light: '#f6f7fb', dark: '#14151d', pig: '#fff0f5' };
-function storedTheme() { try { const value = localStorage.getItem(THEME_KEY) || 'auto'; return value === 'pig' && !pigUnlocked() ? 'auto' : value; } catch { return 'auto'; } }
-function pigUnlocked() { try { return localStorage.getItem(PIG_KEY) === '1'; } catch { return false; } }
+const THEME_KEY = 'zoshit-theme';
+const themeColors = { light: '#f6f7fb', dark: '#14151d', pig: '#fff0f5', elephant: '#eef1f5' };
+const secretThemes = {
+  pig: { pattern: /хрю|свин|🐷/i, unlocked: '🐷 Секретну свинську тему відкрито! Її можна вибрати в «Тема»', enabled: '🐷 Хрю-хрю! Свинська тема увімкнена' },
+  elephant: { pattern: /слон|ту-ру|🐘/i, unlocked: '🐘 Секретну слонячу тему відкрито! Її можна вибрати в «Тема»', enabled: '🐘 Ту-ру-ру! Слоняча тема увімкнена' }
+};
+function themeUnlocked(name) { try { return localStorage.getItem(`zoshit-${name}-unlocked`) === '1'; } catch { return false; } }
+function storedTheme() { try { const value = localStorage.getItem(THEME_KEY) || 'auto'; return secretThemes[value] && !themeUnlocked(value) ? 'auto' : value; } catch { return 'auto'; } }
 function applyTheme(choice = storedTheme()) {
   const resolved = choice === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : choice;
   document.documentElement.dataset.theme = resolved;
   $('#themeColorMeta')?.setAttribute('content', themeColors[resolved] || themeColors.light);
   document.querySelectorAll('[data-theme-choice]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === choice)));
 }
-function setTheme(choice) { try { localStorage.setItem(THEME_KEY, choice); } catch {} applyTheme(choice); if (choice === 'pig') notify('🐷 Хрю-хрю! Свинська тема увімкнена'); }
+function setTheme(choice) { try { localStorage.setItem(THEME_KEY, choice); } catch {} applyTheme(choice); if (secretThemes[choice]) notify(secretThemes[choice].enabled); }
 function openThemeDialog() {
-  const unlocked = pigUnlocked();
-  $('[data-theme-choice="pig"]').hidden = !unlocked;
-  $('#themeSecretHint').textContent = unlocked ? '🐽 Секретну тему знайдено!' : '🤫 Тут є ще одна секретна тема… Спробуй щось пошукати.';
+  const names = Object.keys(secretThemes), found = names.filter(themeUnlocked);
+  names.forEach((name) => { $(`[data-theme-choice="${name}"]`).hidden = !themeUnlocked(name); });
+  $('#themeSecretHint').textContent = found.length === names.length ? '🎉 Усі секретні теми знайдено!' : `🤫 Секретних тем знайдено: ${found.length} з ${names.length}. Спробуй щось пошукати…`;
   applyTheme(storedTheme());
   $('#themeDialog').showModal();
 }
-function unlockPigTheme() {
-  if (pigUnlocked()) return;
-  try { localStorage.setItem(PIG_KEY, '1'); } catch {}
-  setTheme('pig');
-  notify('🐷 Секретну свинську тему відкрито! Її можна вибрати в «Тема»');
+function unlockSecretTheme(name) {
+  if (!secretThemes[name] || themeUnlocked(name)) return;
+  try { localStorage.setItem(`zoshit-${name}-unlocked`, '1'); } catch {}
+  setTheme(name);
+  notify(secretThemes[name].unlocked);
 }
 $('#themeButton').addEventListener('click', openThemeDialog);
 $('#themeOptions').addEventListener('click', (event) => { const button = event.target.closest('[data-theme-choice]'); if (button) setTheme(button.dataset.themeChoice); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (storedTheme() === 'auto') applyTheme('auto'); });
-$('#searchInput').addEventListener('input', (event) => { if (/хрю|свин|🐷/i.test(event.target.value)) unlockPigTheme(); });
+$('#searchInput').addEventListener('input', (event) => { Object.entries(secretThemes).forEach(([name, theme]) => { if (theme.pattern.test(event.target.value)) unlockSecretTheme(name); }); });
 applyTheme();
 (() => { const kbd = document.getElementById('searchShortcut'); if (!kbd) return; if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) kbd.textContent = '⌘ K'; if (matchMedia('(hover: none)').matches) kbd.hidden = true; })();
