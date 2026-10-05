@@ -24,7 +24,8 @@
   frame.style.cssText = 'position:fixed;left:-5000px;top:0;width:1200px;height:900px';
   document.body.appendChild(frame);
   const prefix = location.pathname.match(/^\/u\/\d+/)?.[0] || '';
-  const batch = { zoshitBatch: 1, createdAt: new Date().toISOString(), parts: [] };
+  const batch = { zoshitBatch: 1, createdAt: new Date().toISOString(), parts: [], textbooks: [] };
+  let textbooks = [];
   const report = [];
 
   for (const [ci, course] of chosen.entries()) {
@@ -46,17 +47,26 @@
       const own = row.innerText.split('\n').map((s) => s.trim()).filter(Boolean);
       const title = own.find((s) => /^\d{1,2}\.\d{1,2}\.?/.test(s)) || own.find((s) => !junk.test(s)) || own[0];
       const type = /Матеріал/i.test(row.innerText) ? 'МАТЕРІАЛ' : /Запитання/i.test(row.innerText) ? 'ЗАПИТАННЯ' : 'ЗАВДАННЯ';
-      if (homework.test(title) && !theory.test(title)) { skipped++; continue; }   // явні домашки й контрольні — одразу пропускаємо
       const before = new Set(lines());
+      const linksBefore = new Set([...doc.querySelectorAll('a[href]')].map((a) => a.href));
       row.scrollIntoView({ block: 'center' });
       (row.querySelector('[role="button"],[aria-expanded]') || row.firstElementChild || row).click();
       let added = [];
       for (let t = 0; t < 10 && !added.length; t++) { await wait(500); added = lines().filter((s) => !before.has(s) && s !== title && !junk.test(s)); }
+      const files = [...doc.querySelectorAll('a[href]')].filter((a) => !linksBefore.has(a.href) && /drive\.google|docs\.google|\.pdf|youtu|classroom\.google\.com\/.*\/m\//i.test(a.href))
+        .map((a) => ({ name: (a.innerText || a.title || a.getAttribute('aria-label') || '').split('\n')[0].trim() || 'файл', url: a.href }))
+        .filter((f, k, all) => all.findIndex((x) => x.url === f.url) === k);
       (row.querySelector('[aria-expanded="true"]') || row.firstElementChild || row).click();
       await wait(400);
-      items.push({ topic, title, type, text: added.join('\n').slice(0, 3000) });
-      console.log(`  (${i + 1}/${rows.length}) ${type} ${title}`);
+      const text = added.join('\n');
+      // пропускаємо лише чисті домашки: якщо в назві чи тексті є §/параграф/опрацювати — залишаємо
+      if (homework.test(title + ' ' + text) && !theory.test(title + ' ' + text)) { skipped++; console.log(`  (${i + 1}/${rows.length}) ⏭ ${title}`); continue; }
+      items.push({ topic, title, type, text: text.slice(0, 3000), files });
+      files.filter((f) => /підручник|учебник|textbook|\.pdf\b|pdf$/i.test(f.name + ' ' + f.url)).forEach((f) => { if (!textbooks.some((t) => t.url === f.url)) textbooks.push({ course: course.name, subject: '', ...f }); });
+      console.log(`  (${i + 1}/${rows.length}) ${type} ${title}${files.length ? ` · 📎${files.length}` : ''}`);
     }
+    textbooks.forEach((t) => { t.subject ||= course.name.replace(/^\s*\d{1,2}\s*[-–—.]?\s*[А-ЯІЇЄҐA-Z]?\s*(клас)?\s*/iu, '').trim(); });
+    batch.textbooks.push(...textbooks); textbooks = [];
     const subject = course.name.replace(/^\s*\d{1,2}\s*[-–—.]?\s*[А-ЯІЇЄҐA-Z]?\s*(клас)?\s*/iu, '').trim() || course.name;
     for (let start = 0; start < items.length; start += PART_SIZE) {
       batch.parts.push({ course: course.name, subject, part: start / PART_SIZE + 1, items: items.slice(start, start + PART_SIZE) });
@@ -69,5 +79,9 @@
   a.download = 'zoshyt_classroom.json';
   a.click();
   console.table(report);
+  if (batch.textbooks.length) {
+    console.log('📚 Схоже на підручники — завантаж PDF і додай їх у панелі Gemini («📚 Підручники»). Назви файлів залиш з назвою предмета:');
+    console.table(batch.textbooks.map((t) => ({ предмет: t.subject, файл: t.name, посилання: t.url })));
+  }
   console.log(`✅ Готово! Запитів до ШІ: ${batch.parts.length}. Тепер відкрий gemini.google.com і запусти скрипт кроку 2.`);
 })();

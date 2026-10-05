@@ -21,13 +21,17 @@
   const btn = 'padding:8px;border:1px solid #ccc;border-radius:9px;background:#fff;cursor:pointer;font:inherit';
   panel.append(
     h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px' }, h('b', { style: 'font-size:15px' }, '📒 Зошит × Gemini'), h('button', { 'data-x': '', style: 'border:0;background:none;font-size:18px;cursor:pointer' }, '×')),
-    h('button', { 'data-file': '', style: 'width:100%;padding:10px;border:0;border-radius:9px;background:#6958d8;color:#fff;font-weight:700;cursor:pointer;font:inherit' }, '📂 Вибрати zoshyt_classroom.json і почати'),
+    h('button', { 'data-file': '', style: 'width:100%;padding:10px;border:1px solid #6958d8;border-radius:9px;background:#f0edff;color:#20243a;font-weight:700;cursor:pointer;font:inherit' }, '1️⃣ 📂 Вибрати zoshyt_classroom.json'),
+    h('button', { 'data-books': '', style: 'width:100%;margin-top:6px;' + btn }, '2️⃣ 📚 Додати підручники PDF (необов’язково)'),
+    h('div', { 'data-bookinfo': '', style: 'font-size:12px;margin-top:4px' }),
+    h('button', { 'data-start': '', disabled: '', style: 'width:100%;margin-top:6px;padding:10px;border:0;border-radius:9px;background:#6958d8;color:#fff;font-weight:700;cursor:pointer;font:inherit' }, '3️⃣ ▶ Почати'),
     h('button', { 'data-harvest': '', style: 'width:100%;margin-top:6px;background:#f6f7fb;' + btn }, 'Або: зібрати JSON з уже наявних чатів'),
     h('div', { style: 'display:flex;gap:6px;margin-top:6px' }, h('button', { 'data-stop': '', disabled: '', style: 'flex:1;' + btn }, '⏸ Пауза'), h('button', { 'data-save': '', style: 'flex:1;' + btn }, '💾 Скачати що є')),
     h('div', { 'data-bar': '', style: 'height:8px;background:#eee;border-radius:9px;margin:10px 0 6px;overflow:hidden' }, h('i', { style: 'display:block;height:100%;width:0;background:#42a997' })),
     h('div', { 'data-status': '', style: 'font-weight:600' }, 'Готовий до роботи.'),
     h('div', { 'data-log': '', style: 'margin-top:6px;font-size:12px;color:#555;white-space:pre-wrap' }),
-    h('input', { type: 'file', accept: '.json,application/json', hidden: '' })
+    h('input', { type: 'file', accept: '.json,application/json', hidden: '', 'data-jsoninput': '' }),
+    h('input', { type: 'file', accept: '.pdf,application/pdf', multiple: '', hidden: '', 'data-bookinput': '' })
   );
   document.body.appendChild(panel);
   const ui = (k) => panel.querySelector(`[data-${k}]`);
@@ -51,17 +55,52 @@
   };
   ui('save').onclick = () => download(loadRun()?.materials || []);
 
-  const buildPrompt = (part) => `Ти готуєш конспекти для шкільної бібліотеки «Зошит». Нижче — пункти з Google Classroom (курс «${part.course}»).
+  let loadedBatch = null, books = [];
+  const norm = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\d]+/gu, ' ').trim();
+  const bookFor = (subject) => {
+    const stem = norm(subject).split(' ')[0]?.slice(0, 5);
+    const match = books.find((file) => stem && norm(file.name).includes(stem));
+    return match || (books.length === 1 && new Set(loadedBatch?.parts.map((p) => p.subject)).size === 1 ? books[0] : null);
+  };
+  const renderBookInfo = () => {
+    const box = ui('bookinfo'); box.replaceChildren();
+    if (loadedBatch?.textbooks?.length) {
+      box.append(h('div', { style: 'margin:4px 0;font-weight:600' }, 'Підручники в Classroom (відкрий → завантаж PDF):'));
+      loadedBatch.textbooks.forEach((t) => box.append(h('div', {}, '• ', h('a', { href: t.url, target: '_blank', rel: 'noopener', style: 'color:#6958d8' }, `${t.subject}: ${t.name}`))));
+    }
+    if (loadedBatch) {
+      const subjects = [...new Set(loadedBatch.parts.map((p) => p.subject))];
+      box.append(h('div', { style: 'margin-top:6px;font-weight:600' }, 'Хто з чим працюватиме:'));
+      subjects.forEach((subject) => { const book = bookFor(subject); box.append(h('div', {}, `${book ? '📗' : '⚪'} ${subject} — ${book ? book.name : 'без підручника (з власних знань)'}`)); });
+    } else if (books.length) box.append(h('div', {}, `Підручників: ${books.length}. Тепер вибери zoshyt_classroom.json.`));
+  };
+  async function attachFile(file) {
+    const input = $q(sel.input);
+    input.focus();
+    const transfer = new DataTransfer(); transfer.items.add(file);
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+    for (let t = 0; t < 120; t++) {                 // чекаємо, поки файл завантажиться (до 2 хв)
+      await wait(1000);
+      const shown = document.body.innerText.includes(file.name.replace(/\.pdf$/i, '')) || document.body.innerText.includes(file.name);
+      const busy = document.querySelector('mat-progress-bar, [role="progressbar"], .uploading, [aria-busy="true"]');
+      if (shown && !busy) { await wait(1500); return true; }
+    }
+    log(`⚠ Не дочекався завантаження «${file.name}» — надсилаю без нього`);
+    return false;
+  }
+  const buildPrompt = (part, book) => `Ти готуєш конспекти для шкільної бібліотеки «Зошит». Нижче — пункти з Google Classroom (курс «${part.course}»).
 
 1. ВІДБІР. Залиш тільки теорію: опрацювання / вивчення параграфа чи теми, теоретичні матеріали уроку. ВИКИНЬ: розв'язування задач, вправи, номери з підручника, тести, самостійні, контрольні, лабораторні, практичні, оголошення, порожні пункти.
-2. КОНСПЕКТ. Для кожного залишеного пункту — шкільний конспект українською, 200–600 слів. Оформлення Markdown: підзаголовки "### ", списки "- ", **жирним** ключові терміни. Формули — LaTeX між знаками долара: $F = ma$, окремим рядком $$E_k = \\frac{mv^2}{2}$$ (у JSON подвоюй зворотні слеші). Не вигадуй фактів; якщо тема незрозуміла — пропусти пункт.
+   УВАГА: учитель часто пише «опрацювати §…» прямо в завданні разом із задачами чи вправами. Такий пункт ЗАЛИШ: зроби конспект параграфа, а задачі й вправи ігноруй.
+${book ? `   ДЖЕРЕЛО: до повідомлення прикріплено підручник «${book.name}». Знайди в ньому потрібні параграфи (за номером § або назвою теми) і роби конспект САМЕ за текстом підручника — означення, формули й приклади звідти. Якщо параграфа в підручнику немає — пиши з власних знань.
+` : '   ДЖЕРЕЛО: підручник не прикріплено — пиши з власних знань за шкільною програмою України.\n'}2. КОНСПЕКТ. Для кожного залишеного пункту — шкільний конспект українською, 200–600 слів. Оформлення Markdown: підзаголовки "### ", списки "- ", **жирним** ключові терміни. Формули — LaTeX між знаками долара: $F = ma$, окремим рядком $$E_k = \\frac{mv^2}{2}$$ (у JSON подвоюй зворотні слеші). Не вигадуй фактів; якщо тема незрозуміла — пропусти пункт.
 3. КВІЗ І КАРТКИ. До кожного конспекту: квіз на 5 запитань (3–4 варіанти, answer — номер правильного варіанта від 0) і 6 флеш-карток (front — термін або запитання, мінімум 2 символи; back — відповідь).
 4. РЕЗУЛЬТАТ. Поверни ЛИШЕ один блок коду json:
 {"materials":[{"subject":"${part.subject}","topic":"розділ з Classroom","title":"§N. Назва теми без дати","summary":"одне речення","content":"конспект у Markdown","tags":["слово","слово"],"quiz":{"title":"Перевір себе","questions":[{"question":"…","options":["…","…","…"],"answer":0,"explanation":"…"}]},"flashcards":{"title":"Картки","cards":[{"front":"…","back":"…"}]}}]}
 Якщо нічого не підходить — поверни {"materials":[]}. JSON має бути валідним.
 
 ПУНКТИ:
-${part.items.map((it, i) => `\n===== ${i + 1}. [${it.type}] ${it.title}\nРозділ: ${it.topic}\n${it.text || '(тексту немає — орієнтуйся на назву)'}`).join('\n')}`;
+${part.items.map((it, i) => `\n===== ${i + 1}. [${it.type}] ${it.title}\nРозділ: ${it.topic}\n${it.text || '(тексту немає — орієнтуйся на назву)'}${it.files?.length ? `\nВкладення: ${it.files.map((f) => f.name).join('; ')}` : ''}`).join('\n')}`;
 
   const extractMaterials = (root) => {
     if (!root) return null;
@@ -116,7 +155,12 @@ ${part.items.map((it, i) => `\n===== ${i + 1}. [${it.type}] ${it.title}\nРоз�
       status(`⏳ ${run.done.length + 1}/${batch.parts.length}: ${part.course}, частина ${part.part}`);
       let materials = null;
       for (let attempt = 1; attempt <= 2 && materials === null; attempt++) {
-        try { await newChat(); materials = extractMaterials(await ask(buildPrompt(part))); }
+        try {
+          await newChat();
+          const book = bookFor(part.subject);
+          const attached = book ? await attachFile(book) : false;
+          materials = extractMaterials(await ask(buildPrompt(part, attached ? book : null)));
+        }
         catch (error) { log(`❌ ${error.message}`); }
         if (materials === null && attempt === 1) log(`↻ Повторюю частину ${part.part} (${part.course}) — JSON не прочитався`);
       }
@@ -138,18 +182,27 @@ ${part.items.map((it, i) => `\n===== ${i + 1}. [${it.type}] ${it.title}\nРоз�
     }
   }
 
-  const fileInput = panel.querySelector('input[type=file]');
+  const fileInput = ui('jsoninput'), bookInput = ui('bookinput');
   ui('file').onclick = () => { if (!running) fileInput.click(); };
+  ui('books').onclick = () => { if (!running) bookInput.click(); };
   fileInput.onchange = async () => {
     const file = fileInput.files[0]; fileInput.value = '';
     if (!file) return;
     try {
       const batch = JSON.parse(await file.text());
       if (batch.zoshitBatch !== 1 || !Array.isArray(batch.parts)) throw new Error();
-      log(`📂 ${file.name}: частин ${batch.parts.length}`);
-      await runBatch(batch);
+      loadedBatch = batch;
+      ui('start').disabled = false; ui('start').removeAttribute('disabled');
+      status(`📂 ${file.name}: запитів до Gemini — ${batch.parts.length}. Додай підручники або натисни «Почати».`);
+      renderBookInfo();
     } catch (error) { status('❌ Це не файл zoshyt_classroom.json'); console.error(error); }
   };
+  bookInput.onchange = () => {
+    books = [...books, ...bookInput.files].filter((f, i, all) => all.findIndex((x) => x.name === f.name) === i); bookInput.value = '';
+    log(`📚 Підручники: ${books.map((f) => f.name).join(', ')}`);
+    renderBookInfo();
+  };
+  ui('start').onclick = () => { if (!running && loadedBatch) runBatch(loadedBatch); };
 
   // ---------- збір з уже наявних чатів ----------
   ui('harvest').onclick = async () => {
