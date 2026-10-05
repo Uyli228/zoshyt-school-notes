@@ -1167,3 +1167,4 @@ $('#csvImportButton').addEventListener('click',startCsvImport);$('#csvImportFile
 $('#searchInput').addEventListener('input',e=>{activeScreen='library';renderSearch(e.target.value);});document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();}if(e.key==='Escape'&&$('#editorDialog').open)closeEditor();});
 initializeApp();
 if (supportPageUrl) $('#donatePleaseDialog').showModal();
+(() => { const kbd = document.getElementById('searchShortcut'); if (!kbd) return; if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) kbd.textContent = '⌘ K'; if (matchMedia('(hover: none)').matches) kbd.hidden = true; })();

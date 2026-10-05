@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f7fb">
-  <meta name="description" content="Особиста бібліотека навчальних матеріалів: предмети, теми й параграфи в одному місці.">
+  <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#14151d" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Спільна бібліотека шкільних конспектів: предмети, теми й параграфи, квізи та флеш-картки в одному місці.">
   <title>Зошит — бібліотека знань</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
@@ -21,7 +21,7 @@
       <div class="sidebar-bottom"><div class="storage-note" id="storageNote"><span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton" hidden>↙ &nbsp;Імпорт копії</button><button class="text-button" id="csvImportButton" hidden>▤ &nbsp;Імпорт таблиці</button></div>
     </aside>
     <main class="main-area">
-      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Спільна бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему, параграф або тег…" aria-label="Пошук матеріалів"><kbd>⌘ K</kbd></label><a class="button button-donate" id="donateButton" href="https://donatello.to/zhoshit" target="_blank" rel="noopener noreferrer" hidden>♡ Підтримати</a><button class="button button-quiet" id="reportsButton" type="button" hidden>Повідомлення</button><button class="button button-primary" id="submitNotesButton" type="button">Запропонувати конспект</button><button class="button button-quiet account-button" id="accountButton" type="button">Увійти</button></header>
+      <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Спільна бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему, параграф або тег…" aria-label="Пошук матеріалів"><kbd id="searchShortcut">Ctrl K</kbd></label><a class="button button-donate" id="donateButton" href="https://donatello.to/zhoshit" target="_blank" rel="noopener noreferrer" hidden>♡ Підтримати</a><button class="button button-quiet" id="reportsButton" type="button" hidden>Повідомлення</button><button class="button button-primary" id="submitNotesButton" type="button">Запропонувати конспект</button><button class="button button-quiet account-button" id="accountButton" type="button">Увійти</button></header>
       <div id="systemBanner" class="system-banner" hidden></div>
       <section id="view" class="view" aria-live="polite"></section>
     </main>
