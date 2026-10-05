@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#14151d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" id="themeColorMeta" content="#f6f7fb">
+  <script>(function(){var t="auto";try{t=localStorage.getItem("zoshit-theme")||"auto"}catch(e){}if(t==="pig"){try{if(localStorage.getItem("zoshit-pig-unlocked")!=="1")t="auto"}catch(e){t="auto"}}document.documentElement.dataset.theme=t==="auto"?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):t})()</script>
   <meta name="description" content="Спільна бібліотека шкільних конспектів: предмети, теми й параграфи, квізи та флеш-картки в одному місці.">
   <title>Зошит — бібліотека знань</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -18,7 +19,7 @@
       </a>
       <div class="side-heading"><span>ПРЕДМЕТИ</span><button class="icon-button" id="addSubject" aria-label="Додати предмет" title="Додати предмет">＋</button></div>
       <nav id="subjectNav" class="subject-nav"></nav>
-      <div class="sidebar-bottom"><div class="storage-note" id="storageNote"><span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span></div><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton" hidden>↙ &nbsp;Імпорт копії</button><button class="text-button" id="csvImportButton" hidden>▤ &nbsp;Імпорт матеріалів (Excel/CSV/JSON)</button></div>
+      <div class="sidebar-bottom"><div class="storage-note" id="storageNote"><span class="storage-dot"></span><span>Спільна бібліотека<br>для всіх читачів</span></div><button class="text-button" id="themeButton" type="button">🎨 &nbsp;Тема</button><button class="text-button" id="backupButton">↗ &nbsp;Експорт копії</button><button class="text-button" id="importButton" hidden>↙ &nbsp;Імпорт копії</button><button class="text-button" id="csvImportButton" hidden>▤ &nbsp;Імпорт матеріалів (Excel/CSV/JSON)</button></div>
     </aside>
     <main class="main-area">
       <header class="topbar"><div id="breadcrumbs" class="breadcrumbs"><span>Спільна бібліотека</span></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="Знайти тему, параграф або тег…" aria-label="Пошук матеріалів"><kbd id="searchShortcut">Ctrl K</kbd></label><a class="button button-donate" id="donateButton" href="https://donatello.to/zhoshit" target="_blank" rel="noopener noreferrer" hidden>♡ Підтримати</a><button class="button button-quiet" id="reportsButton" type="button" hidden>Повідомлення</button><button class="button button-primary" id="submitNotesButton" type="button">Запропонувати конспект</button><button class="button button-quiet account-button" id="accountButton" type="button">Увійти</button></header>
@@ -54,6 +55,7 @@
       <button class="button button-quiet donate-dismiss" id="donatePleaseClose" type="button">Закрити (1/5)</button>
     </div>
   </dialog>
+  <dialog id="themeDialog" class="editor-dialog"><form method="dialog"><div class="dialog-head"><div><span class="eyebrow">НАЛАШТУВАННЯ</span><h2>Тема оформлення</h2></div><button class="icon-button close-button" value="close" aria-label="Закрити">×</button></div><div class="form-fields"><div class="theme-options" id="themeOptions"><button type="button" class="theme-option" data-theme-choice="auto"><span>🌗</span><strong>Як на пристрої</strong><small>Світла вдень, темна вночі</small></button><button type="button" class="theme-option" data-theme-choice="light"><span>☀️</span><strong>Світла</strong><small>Класичний «Зошит»</small></button><button type="button" class="theme-option" data-theme-choice="dark"><span>🌙</span><strong>Темна</strong><small>Для читання ввечері</small></button><button type="button" class="theme-option theme-option-pig" data-theme-choice="pig" hidden><span>🐷</span><strong>Свинська</strong><small>Секретна. Хрю!</small></button></div><p class="theme-secret-hint" id="themeSecretHint">🤫 Тут є ще одна секретна тема…</p></div><div class="dialog-actions"><button class="button button-primary" value="close">Готово</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
