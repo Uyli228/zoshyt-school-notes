@@ -692,6 +692,10 @@ function parseCsv(text) {
     } else cell += char;
   }
   row.push(cell); if (row.some((value) => value.trim())) rows.push(row);
+  return tableRowsToItems(rows);
+}
+function tableRowsToItems(rows) {
+  rows = rows.map((values) => values.map((value) => String(value ?? ''))).filter((values) => values.some((value) => value.trim()));
   if (rows.length < 2) throw new Error('У таблиці немає рядків із матеріалами.');
   const headers = rows.shift().map((value) => value.trim().toLocaleLowerCase('uk').replace(/[ _-]+/g, ''));
   const column = (names) => headers.findIndex((header) => names.includes(header));
@@ -713,11 +717,30 @@ function parseCsv(text) {
   if (parsed.length > 1000) throw new Error('За один раз можна додати не більше 1000 рядків.');
   return parsed;
 }
+let sheetJsPromise = null;
+function loadSheetJs() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  sheetJsPromise ||= new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => { sheetJsPromise = null; reject(new Error('Не вдалося завантажити модуль для Excel. Перевір інтернет.')); };
+    document.head.appendChild(script);
+  });
+  return sheetJsPromise;
+}
+async function parseExcel(file) {
+  const XLSX = await loadSheetJs();
+  const book = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  const sheet = book.Sheets[book.SheetNames[0]];
+  if (!sheet) throw new Error('У файлі Excel немає аркушів.');
+  return tableRowsToItems(XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' }));
+}
 async function previewCsvFile(file) {
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { bulkImportRows = []; $('#confirmCsvImport').disabled = true; $('#csvImportPreview').innerHTML = ''; $('#csvImportHint').textContent = 'CSV-файл має бути меншим за 10 МБ.'; return; }
+  if (file.size > 10 * 1024 * 1024) { bulkImportRows = []; $('#confirmCsvImport').disabled = true; $('#csvImportPreview').innerHTML = ''; $('#csvImportHint').textContent = 'Файл має бути меншим за 10 МБ.'; return; }
   try {
-    bulkImportRows = parseCsv(await file.text());
+    bulkImportRows = /\.(xlsx|xlsm|xls|ods)$/i.test(file.name) ? await parseExcel(file) : parseCsv(await file.text());
     $('#csvImportHint').textContent = `Знайдено ${bulkImportRows.length} рядків. Переглянь перші матеріали й підтвердь імпорт.`;
     $('#csvImportPreview').innerHTML = `<ul>${bulkImportRows.slice(0, 12).map((row) => `<li><strong>${esc(row.subject)} › ${esc(row.topic)} › ${esc(row.title)}</strong>${row.tags.length ? `<small>${row.tags.map((tag) => `#${esc(tag)}`).join(' ')}</small>` : ''}</li>`).join('')}</ul>${bulkImportRows.length > 12 ? `<small>Інші ${bulkImportRows.length - 12} рядків теж буде імпортовано.</small>` : ''}`;
     $('#confirmCsvImport').disabled = false;
