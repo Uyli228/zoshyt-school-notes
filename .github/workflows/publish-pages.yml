@@ -27,6 +27,8 @@ jobs:
         run: |
           sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${GITHUB_SHA}\"|" index.html
           sed -i "s|src=\"app.js\"|src=\"app.js?v=${GITHUB_SHA}\"|" index.html
+      - name: Запакувати розширення для Chrome
+        run: cd extension && zip -qr ../zoshyt-extension.zip . && cd ..
       - name: Налаштувати GitHub Pages
         uses: actions/configure-pages@v5
       - name: Підготувати файли сайту

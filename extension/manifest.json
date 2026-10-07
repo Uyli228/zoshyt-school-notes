@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Зошит — імпорт з Classroom",
+  "short_name": "Зошит",
+  "version": "1.0.0",
+  "description": "Збирає нові завдання з Google Classroom, робить з них конспекти в Gemini та додає на сайт «Зошит».",
+  "permissions": ["storage", "unlimitedStorage"],
+  "host_permissions": [
+    "https://classroom.google.com/*",
+    "https://gemini.google.com/*",
+    "https://uyli228.github.io/*"
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Зошит", "default_icon": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" } },
+  "icons": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" },
+  "content_scripts": [
+    { "matches": ["https://classroom.google.com/*"], "js": ["common.js", "classroom.js"], "run_at": "document_idle", "all_frames": false },
+    { "matches": ["https://gemini.google.com/*"], "js": ["common.js", "gemini.js"], "run_at": "document_idle" },
+    { "matches": ["https://uyli228.github.io/zoshyt-school-notes/*", "http://localhost/*"], "js": ["common.js", "site.js"], "run_at": "document_idle" }
+  ]
+}

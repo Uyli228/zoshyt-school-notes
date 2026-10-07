@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>Зошит</title>
+<style>
+  :root{color-scheme:light dark;--ink:#20243a;--muted:#6b6f82;--line:#e3e4ed;--bg:#fff;--soft:#f4f3fb;--accent:#6958d8}
+  @media (prefers-color-scheme:dark){:root{--ink:#e6e7f0;--muted:#9a9db0;--line:#2c2e3c;--bg:#1d1f2a;--soft:#242635}}
+  body{margin:0;width:330px;font:13px/1.45 system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+  header{display:flex;gap:10px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+  header img{width:28px;height:28px;border-radius:8px}
+  header b{font-size:15px}
+  main{padding:12px 16px 16px;display:grid;gap:10px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .stat{background:var(--soft);border-radius:10px;padding:8px;text-align:center}
+  .stat b{display:block;font-size:18px}
+  .stat small{color:var(--muted);font-size:11px}
+  button{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:9px 10px;border-radius:9px;cursor:pointer;text-align:left}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+  .muted{color:var(--muted);font-size:12px}
+  details{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  summary{cursor:pointer;font-weight:600}
+  label{display:flex;gap:6px;align-items:center;font-size:12px;margin:4px 0}
+  .danger{color:#c33}
+</style>
+</head>
+<body>
+<header><img src="icon-48.png" alt=""><div><b>Зошит</b><div class="muted">імпорт з Google Classroom</div></div></header>
+<main>
+  <div class="stats">
+    <div class="stat"><b id="queue">0</b><small>у черзі</small></div>
+    <div class="stat"><b id="ready">0</b><small>готово</small></div>
+    <div class="stat"><b id="imported">0</b><small>додано</small></div>
+  </div>
+  <div class="muted" id="lastScan"></div>
+  <button class="primary" id="next"></button>
+  <button id="scan">🔄 Перевірити Classroom зараз</button>
+  <button id="gemini">🤖 Обробити чергу в Gemini</button>
+  <button id="site">📥 Відкрити імпорт на «Зошиті»</button>
+  <details>
+    <summary>Курси</summary>
+    <div class="muted">Зніми галочку з курсів, які не треба збирати.</div>
+    <div id="courses"><div class="muted">Список з’явиться після першої перевірки Classroom.</div></div>
+  </details>
+  <details>
+    <summary>Додатково</summary>
+    <button id="baseline" style="width:100%;margin-top:6px">✔ Я вже все імпортував — позначити наявне як оброблене</button>
+    <button id="clearQueue" style="width:100%;margin-top:6px">🧹 Очистити чергу й готові матеріали</button>
+    <button id="reset" class="danger" style="width:100%;margin-top:6px">↺ Скинути все (зібрати заново з нуля)</button>
+  </details>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>
