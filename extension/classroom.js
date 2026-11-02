@@ -6,25 +6,38 @@
   const theory = /(§|параграф|опрацю|вивчи|прочита|конспект|теорі)/i;
   const isHome = () => /^(\/u\/\d+)?\/?(h)?\/?$/.test(location.pathname);
   let scanning = false;
+  const log = (...args) => console.log('[Зошит]', ...args);
+  const findCourses = () => {
+    const courses = [];
+    for (const a of document.querySelectorAll('a[href*="/c/"]')) {
+      const id = (a.getAttribute('href').match(/\/c\/([^/?#]+)/) || [])[1];
+      const name = (a.innerText || a.getAttribute('aria-label') || '').split('\n').map((s) => s.trim()).filter(Boolean)[0];
+      if (id && name && !courses.some((c) => c.id === id)) courses.push({ id, name });
+    }
+    return courses;
+  };
 
   async function scan(force) {
     if (scanning) return;
     const state = await Z.state();
     if (!force && Date.now() - state.lastScan < SCAN_EVERY) return;
-    const courses = [];
-    for (const a of document.querySelectorAll('a[href*="/c/"]')) {
-      const id = (a.getAttribute('href').match(/\/c\/([^/?#]+)/) || [])[1];
-      const name = a.innerText.split('\n').map((s) => s.trim()).filter(Boolean)[0];
-      if (id && name && !courses.some((c) => c.id === id)) courses.push({ id, name });
-    }
-    if (!courses.length) return;
     scanning = true;
+    Z.badge('📒 Зошит: шукаю курси на сторінці…');
+    let courses = [];
+    for (let t = 0; t < 40 && !courses.length; t++) { courses = findCourses(); if (!courses.length) await Z.wait(500); }
+    log('знайдено курсів:', courses.length, courses);
+    if (!courses.length) {
+      scanning = false;
+      Z.badge('📒 Зошит: не бачу курсів на цій сторінці. Відкрий головну Classroom (де плитки з курсами) і натисни сюди.', () => scan(true));
+      return;
+    }
     await Z.set({ courses });
     const active = courses.filter((c) => !state.excluded.includes(c.id));
     const prefix = location.pathname.match(/^\/u\/\d+/)?.[0] || '';
     const frame = Z.h('iframe', { style: 'position:fixed;left:-5000px;top:0;width:1200px;height:900px', 'aria-hidden': 'true' });
     document.body.append(frame);
     let found = 0;
+    const emptyCourses = [];
     try {
       for (const [index, course] of active.entries()) {
         Z.badge(`📒 Зошит: перевіряю «${course.name}» (${index + 1}/${active.length})…`);
@@ -36,7 +49,10 @@
         }
         let doc;
         try { doc = frame.contentDocument; doc.body.innerText; } catch { Z.badge('📒 Зошит: Classroom не дав відкрити курс. Спробуй пізніше.'); break; }
-        found += await scanCourse(doc, course);
+        const added = await scanCourse(doc, course);
+        found += added;
+        log(`курс «${course.name}»: рядків ${scanCourse.lastRows}, нових ${added}`);
+        if (!scanCourse.lastRows) emptyCourses.push(course.name);
       }
     } finally {
       frame.remove();
@@ -44,10 +60,11 @@
     }
     const after = await Z.state();
     await Z.set({ lastScan: Date.now(), baseline: false });
-    if (state.baseline) Z.badge('📒 Зошит: усе наявне позначено як оброблене. Далі збиратиму лише нове.', () => Z.badge(''));
+    if (emptyCourses.length === active.length && active.length) Z.badge(`📒 Зошит: курсів ${active.length}, але в жодному не вдалося прочитати завдання. Натисни F12 → Console і надішли скріншот рядків «[Зошит]».`, () => Z.badge(''));
+    else if (state.baseline) Z.badge('📒 Зошит: усе наявне позначено як оброблене. Далі збиратиму лише нове.', () => Z.badge(''));
     else if (after.queue.length) Z.badge(`📒 Зошит: нових пунктів ${found}, у черзі ${after.queue.length}. Натисни, щоб обробити в Gemini →`, () => window.open('https://gemini.google.com/app#zoshit-run', '_blank'));
     else Z.badge('📒 Зошит: нових завдань немає ✓', () => Z.badge(''));
-    setTimeout(() => { if (!after.queue.length) Z.badge(''); }, 8000);
+    setTimeout(() => { if (!after.queue.length) showButton(); }, 8000);
   }
 
   async function scanCourse(doc, course) {
@@ -55,6 +72,7 @@
     const findRows = () => [...doc.querySelectorAll('li, [role="listitem"]')].filter((el) => /Дата здачі|Опубліковано|Змінено|Без терміну|Due|Posted|Edited/i.test(el.innerText) && !el.querySelector('li, [role="listitem"]'));
     let rows = [], prev = -1;
     for (let t = 0; t < 30; t++) { await Z.wait(1000); rows = findRows(); rows.at(-1)?.scrollIntoView({ block: 'end' }); if (rows.length && rows.length === prev) break; prev = rows.length; }
+    scanCourse.lastRows = rows.length;
     const state = await Z.state();
     const seen = { ...state.seen }, queue = [...state.queue], textbooks = [...state.textbooks];
     const subject = Z.subjectOf(course.name);
@@ -90,12 +108,23 @@
     return added;
   }
 
-  const forced = location.hash.includes('zoshit-scan');
+  function showButton() {
+    Z.badge('📒 Зошит: перевірити нові завдання', () => {
+      if (isHome()) scan(true);
+      else { Z.set({ forceScan: true }); location.href = `${location.origin}${location.pathname.match(/^\/u\/\d+/)?.[0] || ''}/h`; }
+    });
+  }
   let lastPath = '';
-  setInterval(() => {
-    if (location.pathname === lastPath) return;
+  setInterval(async () => {
+    if (location.pathname === lastPath || scanning) return;
     lastPath = location.pathname;
-    if (isHome()) setTimeout(() => scan(forced && !scan.done).then(() => { scan.done = true; }), 2500);
-  }, 1500);
-  chrome.runtime.onMessage?.addListener((message) => { if (message === 'zoshit-scan' && isHome()) scan(true); });
+    if (!isHome()) { showButton(); return; }
+    const { forceScan } = await Z.get(['forceScan']);
+    const forced = Boolean(forceScan) || location.hash.includes('zoshit-scan');
+    if (forceScan) await Z.set({ forceScan: false });
+    log('головна Classroom, примусова перевірка:', forced);
+    showButton();
+    setTimeout(() => scan(forced), 1500);
+  }, 1000);
+  log('розширення запущене на', location.href);
 })();
